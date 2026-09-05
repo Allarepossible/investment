@@ -9,3 +9,12 @@ export interface MoexSecurityResponse {
     boards?: MoexBlock;
     [key: string]: unknown;
 }
+
+export interface MoexMarketDataResponse {
+    marketdata?: MoexBlock;
+    securities?: MoexBlock;
+}
+
+export interface MoexSearchResponse {
+    securities?: MoexBlock;
+}

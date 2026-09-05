@@ -6,9 +6,23 @@ export interface NormalizedInstrument {
     type: string;
     exchange: string;
     board: string | null;
+    market: string | null;
     currency: string;
     lotSize: number | null;
     minPriceStep: number | null;
+}
+
+export interface NormalizedPrice {
+    price: number | null;
+    currency: string;
+    updatedAt: string;
+}
+
+export interface MoexSearchResult {
+    ticker: string;
+    name: string;
+    type: string;
+    board: string | null;
 }
 
 function getDescriptionValue(
@@ -49,6 +63,19 @@ function getBoardValue(
     return row[index] ?? null;
 }
 
+function asNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+    }
+
+    return null;
+}
+
 export function mapMoexSecurity(
     response: MoexSecurityResponse,
 ): NormalizedInstrument {
@@ -85,6 +112,7 @@ export function mapMoexSecurity(
         'unknown';
 
     let board: string | null = null;
+    let market: string | null = null;
     let currency = 'RUB';
 
     if (response.boards) {
@@ -112,6 +140,13 @@ export function mapMoexSecurity(
 
             board = boardValue ? String(boardValue) : null;
 
+            const marketValue = getBoardValue(
+                response.boards,
+                primaryBoard,
+                'market',
+            );
+            market = marketValue ? String(marketValue) : null;
+
             currency = currencyValue
                 ? String(currencyValue)
                 : 'RUB';
@@ -124,8 +159,84 @@ export function mapMoexSecurity(
         type: String(type),
         exchange: 'MOEX',
         board,
+        market,
         currency,
-        lotSize: null,
-        minPriceStep: null,
+        lotSize: asNumber(getDescriptionValue(description, 'LOTSIZE')),
+        minPriceStep: asNumber(getDescriptionValue(description, 'MINSTEP')),
     };
+}
+
+export function mapMoexPrice(
+    response: { marketdata?: { columns: string[]; data: unknown[][] } },
+    currency: string,
+): NormalizedPrice {
+    const marketdata = response.marketdata;
+    const row = marketdata?.data[0];
+
+    if (!marketdata || !row) {
+        return { price: null, currency, updatedAt: new Date().toISOString() };
+    }
+
+    for (const field of ['LAST', 'MARKETPRICE', 'LCLOSEPRICE']) {
+        const value = asNumber(getBoardValue(marketdata, row, field));
+        if (value !== null) {
+            return { price: value, currency, updatedAt: new Date().toISOString() };
+        }
+    }
+
+    return { price: null, currency, updatedAt: new Date().toISOString() };
+}
+
+export function mapMoexTradingParameters(
+    response: { securities?: { columns: string[]; data: unknown[][] } },
+): Pick<NormalizedInstrument, 'lotSize' | 'minPriceStep'> {
+    const securities = response.securities;
+    const row = securities?.data[0];
+
+    if (!securities || !row) {
+        return { lotSize: null, minPriceStep: null };
+    }
+
+    return {
+        lotSize: asNumber(getBoardValue(securities, row, 'LOTSIZE')),
+        minPriceStep: asNumber(getBoardValue(securities, row, 'MINSTEP')),
+    };
+}
+
+export function mapMoexSearch(
+    response: { securities?: { columns: string[]; data: unknown[][] } },
+    query = '',
+): MoexSearchResult[] {
+    const securities = response.securities;
+    if (!securities) {
+        return [];
+    }
+
+    return securities.data
+        .map((row) => {
+            const ticker = getBoardValue(securities, row, 'secid');
+            const shortName = getBoardValue(securities, row, 'shortname');
+            const name = getBoardValue(securities, row, 'name');
+            const type = getBoardValue(securities, row, 'type');
+            const board = getBoardValue(securities, row, 'primary_boardid');
+
+            if (!ticker) {
+                return null;
+            }
+
+            return {
+                ticker: String(ticker),
+                name: String(shortName ?? name ?? ticker),
+                type: String(type ?? 'unknown'),
+                board: board ? String(board) : null,
+            };
+        })
+        .filter((item): item is MoexSearchResult => item !== null)
+        .sort((left, right) => {
+            const normalizedQuery = query.toUpperCase();
+            const leftRank = left.ticker === normalizedQuery ? 0 : left.ticker.startsWith(normalizedQuery) ? 1 : 2;
+            const rightRank = right.ticker === normalizedQuery ? 0 : right.ticker.startsWith(normalizedQuery) ? 1 : 2;
+            return leftRank - rightRank || left.ticker.localeCompare(right.ticker);
+        })
+        .slice(0, 20);
 }
