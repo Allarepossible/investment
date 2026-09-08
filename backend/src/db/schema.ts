@@ -76,6 +76,10 @@ export const transactions = sqliteTable('transactions', {
 
     amountKopecks: integer('amount_kopecks'),
 
+    accruedInterestKopecks: integer('accrued_interest_kopecks')
+        .notNull()
+        .default(0),
+
     commissionKopecks: integer('commission_kopecks')
         .notNull()
         .default(0),
@@ -89,6 +93,8 @@ export const transactions = sqliteTable('transactions', {
     }).notNull(),
 
     comment: text('comment'),
+
+    sourceId: text('source_id').unique(),
 
     createdAt: integer('created_at', {
         mode: 'timestamp',

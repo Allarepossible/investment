@@ -18,6 +18,8 @@ export interface NormalizedPrice {
     changePercent: number | null;
     currency: string;
     updatedAt: string;
+    faceValue: number | null;
+    accruedInterest: number | null;
 }
 
 export interface MoexSearchResult {
@@ -172,14 +174,31 @@ export function mapMoexSecurity(
 }
 
 export function mapMoexPrice(
-    response: { marketdata?: { columns: string[]; data: unknown[][] } },
+    response: {
+        marketdata?: { columns: string[]; data: unknown[][] };
+        securities?: { columns: string[]; data: unknown[][] };
+    },
     currency: string,
 ): NormalizedPrice {
     const marketdata = response.marketdata;
     const row = marketdata?.data[0];
+    const security = response.securities?.data[0];
+    const faceValue = security && response.securities
+        ? asNumber(getBoardValue(response.securities, security, 'FACEVALUE'))
+        : null;
+    const accruedInterest = security && response.securities
+        ? asNumber(getBoardValue(response.securities, security, 'ACCRUEDINT'))
+        : null;
 
     if (!marketdata || !row) {
-        return { price: null, changePercent: null, currency, updatedAt: new Date().toISOString() };
+        return {
+            price: null,
+            changePercent: null,
+            currency,
+            updatedAt: new Date().toISOString(),
+            faceValue,
+            accruedInterest,
+        };
     }
 
     for (const field of ['LAST', 'MARKETPRICE', 'LCLOSEPRICE']) {
@@ -190,11 +209,20 @@ export function mapMoexPrice(
                 changePercent: asNumber(getBoardValue(marketdata, row, 'LASTCHANGEPRCNT')),
                 currency,
                 updatedAt: String(getBoardValue(marketdata, row, 'SYSTIME') ?? new Date().toISOString()),
+                faceValue,
+                accruedInterest,
             };
         }
     }
 
-    return { price: null, changePercent: null, currency, updatedAt: new Date().toISOString() };
+    return {
+        price: null,
+        changePercent: null,
+        currency,
+        updatedAt: new Date().toISOString(),
+        faceValue,
+        accruedInterest,
+    };
 }
 
 export function mapMoexTradingParameters(

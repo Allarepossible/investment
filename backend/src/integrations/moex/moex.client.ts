@@ -13,7 +13,12 @@ export class MoexClient {
             });
         }
 
-        const response = await fetch(url);
+        let response: Response;
+        try {
+            response = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+        } catch {
+            throw new Error('MOEX did not respond within 12 seconds');
+        }
 
         if (!response.ok) {
             throw new Error(

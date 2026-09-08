@@ -23,6 +23,28 @@ function normalizeTicker(ticker: string) {
     return ticker.trim().toUpperCase();
 }
 
+function isBond(instrument: { market: string | null; type: string }) {
+    return instrument.market === 'bonds' || instrument.type.includes('bond');
+}
+
+function normalizeInstrumentPrice(
+    quote: ReturnType<typeof mapMoexPrice>,
+    instrument: { market: string | null; type: string },
+) {
+    if (quote.price === null || !isBond(instrument)) return quote;
+
+    // MOEX quotes bonds as a percentage of face value. Most Russian bonds have
+    // a 1,000 RUB nominal; this fallback also keeps old saved instruments valid.
+    const faceValue = quote.faceValue ?? 1_000;
+    return {
+        ...quote,
+        rawPrice: quote.price,
+        price: (quote.price * faceValue) / 100 + (quote.accruedInterest ?? 0),
+        faceValue,
+        priceIncludesAccruedInterest: true,
+    };
+}
+
 export async function getInstrumentFromMoex(ticker: string) {
     const data = await moex.get<MoexSecurityResponse>(
         `/securities/${normalizeTicker(ticker)}.json`,
@@ -148,12 +170,12 @@ export async function getInstrumentPrice(ticker: string) {
 
     const response = await moex.get<MoexMarketDataResponse>(
         `/engines/stock/markets/${instrument.market}/boards/${instrument.board}/securities/${instrument.ticker}.json`,
-        { 'iss.meta': 'off', 'iss.only': 'marketdata' },
+        { 'iss.meta': 'off', 'iss.only': 'marketdata,securities' },
     );
 
     return {
         ticker: instrument.ticker,
-        ...mapMoexPrice(response, instrument.currency),
+        ...normalizeInstrumentPrice(mapMoexPrice(response, instrument.currency), instrument),
     };
 }
 

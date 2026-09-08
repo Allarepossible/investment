@@ -27,6 +27,11 @@ import {
     TransactionNotFoundError,
     TransactionValidationError,
 } from './transactions/transaction.service';
+import {
+    BrokerReportImportError,
+    importTbankBrokerReport,
+    previewTbankBrokerReport,
+} from './imports/tbank-report.service';
 
 const app = express();
 
@@ -35,7 +40,8 @@ const corsOrigins = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.t
 
 
 app.use(cors({ origin: corsOrigins?.length ? corsOrigins : true }));
-app.use(express.json());
+// An 8 MB PDF becomes roughly 10.7 MB after Base64 encoding in JSON.
+app.use(express.json({ limit: '12mb' }));
 
 app.get('/api/health', (_req, res) => {
     res.json({
@@ -199,6 +205,27 @@ app.get('/api/transactions', async (req, res, next) => {
     }
 });
 
+app.post('/api/imports/tbank/preview', async (req, res, next) => {
+    try {
+        res.json(await previewTbankBrokerReport(req.body?.pdfBase64));
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/imports/tbank/commit', async (req, res, next) => {
+    const portfolioId = Number(req.body?.portfolioId);
+    try {
+        res.status(201).json(await importTbankBrokerReport(
+            portfolioId,
+            req.body?.pdfBase64,
+            req.body?.sourceIds,
+        ));
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.post('/api/transactions', async (req, res, next) => {
     try {
         res.status(201).json(await createTransaction(parseTransactionInput(req.body)));
@@ -228,13 +255,13 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
         return;
     }
 
-    if (error instanceof TransactionValidationError) {
+    if (error instanceof TransactionValidationError || error instanceof BrokerReportImportError) {
         res.status(400).json({ error: error.message });
         return;
     }
 
     if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
-        res.status(409).json({ error: 'A portfolio with this name already exists' });
+        res.status(409).json({ error: 'Такая запись уже существует.' });
         return;
     }
 

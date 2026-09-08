@@ -8,6 +8,7 @@ export type PortfolioTransaction = {
     quantity: number | null;
     priceKopecks: number | null;
     amountKopecks: number | null;
+    accruedInterestKopecks: number;
     commissionKopecks: number;
     operationDate: Date;
 };
@@ -78,7 +79,7 @@ export function calculatePortfolioTotals(
                 const position = getPosition(positions, transaction);
                 const quantity = transaction.quantity ?? 0;
                 const price = transaction.priceKopecks ?? 0;
-                const total = quantity * price + commission;
+                const total = quantity * price + transaction.accruedInterestKopecks + commission;
                 position.quantity += quantity;
                 position.costKopecks += total;
                 position.averageCostKopecks = Math.round(position.costKopecks / position.quantity);
@@ -94,7 +95,7 @@ export function calculatePortfolioTotals(
                 }
                 const averageCost = position.quantity ? position.costKopecks / position.quantity : 0;
                 const soldCost = Math.round(averageCost * quantity);
-                const proceeds = quantity * price - commission;
+                const proceeds = quantity * price + transaction.accruedInterestKopecks - commission;
                 position.quantity -= quantity;
                 position.costKopecks -= soldCost;
                 position.averageCostKopecks = position.quantity

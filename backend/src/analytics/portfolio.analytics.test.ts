@@ -12,6 +12,7 @@ const transaction = (overrides: Partial<PortfolioTransaction>): PortfolioTransac
     quantity: 10,
     priceKopecks: 25_000,
     amountKopecks: null,
+    accruedInterestKopecks: 0,
     commissionKopecks: 100,
     operationDate: new Date('2026-01-01'),
     ...overrides,

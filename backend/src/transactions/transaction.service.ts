@@ -25,10 +25,12 @@ export type TransactionInput = {
     quantity: number | null;
     priceKopecks: number | null;
     amountKopecks: number | null;
+    accruedInterestKopecks: number;
     commissionKopecks: number;
     currency: 'RUB';
     operationDate: Date;
     comment: string | null;
+    sourceId: string | null;
 };
 
 export class TransactionValidationError extends Error {}
@@ -57,9 +59,11 @@ export function parseTransactionInput(value: unknown): TransactionInput {
     const quantity = body.quantity === null || body.quantity === undefined ? null : body.quantity;
     const priceKopecks = body.priceKopecks === null || body.priceKopecks === undefined ? null : body.priceKopecks;
     const amountKopecks = body.amountKopecks === null || body.amountKopecks === undefined ? null : body.amountKopecks;
+    const accruedInterestKopecks = body.accruedInterestKopecks ?? 0;
     const commissionKopecks = body.commissionKopecks ?? 0;
     const operationDate = new Date(String(body.operationDate));
     const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 500) || null : null;
+    const sourceId = typeof body.sourceId === 'string' ? body.sourceId.trim().slice(0, 250) || null : null;
 
     if (!Number.isSafeInteger(portfolioId) || (portfolioId as number) < 1) {
         throw new TransactionValidationError('portfolioId must be a positive integer');
@@ -72,6 +76,9 @@ export function parseTransactionInput(value: unknown): TransactionInput {
     }
     if (!Number.isSafeInteger(commissionKopecks) || (commissionKopecks as number) < 0) {
         throw new TransactionValidationError('commissionKopecks must be a non-negative integer');
+    }
+    if (!Number.isSafeInteger(accruedInterestKopecks) || (accruedInterestKopecks as number) < 0) {
+        throw new TransactionValidationError('accruedInterestKopecks must be a non-negative integer');
     }
     if (Number.isNaN(operationDate.getTime())) {
         throw new TransactionValidationError('operationDate must be a valid date');
@@ -96,10 +103,12 @@ export function parseTransactionInput(value: unknown): TransactionInput {
         quantity: quantity as number | null,
         priceKopecks: priceKopecks as number | null,
         amountKopecks: amountKopecks as number | null,
+        accruedInterestKopecks: accruedInterestKopecks as number,
         commissionKopecks: commissionKopecks as number,
         currency: 'RUB',
         operationDate,
         comment,
+        sourceId,
     };
 }
 
@@ -115,6 +124,7 @@ export async function listTransactions(portfolioId?: number) {
             quantity: transactions.quantity,
             priceKopecks: transactions.priceKopecks,
             amountKopecks: transactions.amountKopecks,
+            accruedInterestKopecks: transactions.accruedInterestKopecks,
             commissionKopecks: transactions.commissionKopecks,
             currency: transactions.currency,
             operationDate: transactions.operationDate,
@@ -149,6 +159,7 @@ function toPortfolioTransactions(
         quantity: row.quantity,
         priceKopecks: row.priceKopecks,
         amountKopecks: row.amountKopecks,
+        accruedInterestKopecks: row.accruedInterestKopecks,
         commissionKopecks: row.commissionKopecks,
         operationDate: row.operationDate,
     }));
