@@ -1,6 +1,6 @@
-import { asc, eq, like, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, like, or } from 'drizzle-orm';
 import { db } from '../db';
-import { instruments } from '../db/schema';
+import { instruments, portfolios, transactions } from '../db/schema';
 import { MoexClient } from '../integrations/moex/moex.client';
 import {
     mapMoexPrice,
@@ -63,6 +63,7 @@ export async function addInstrument(ticker: string) {
             target: instruments.ticker,
             set: {
                 name: values.name,
+                isin: values.isin,
                 type: values.type,
                 exchange: values.exchange,
                 board: values.board,
@@ -112,12 +113,27 @@ export async function searchMoexInstruments(query: string) {
         return [];
     }
 
+    const ofzIssue = text.match(/^(?:ОФЗ[\s-]*)?(\d{5})$/i)?.[1];
+    const searchQuery = ofzIssue ? `ОФЗ ${ofzIssue}` : text;
+
     const response = await moex.get<MoexSearchResponse>(
         '/securities.json',
-        { q: text, 'iss.meta': 'off' },
+        { q: searchQuery, 'iss.meta': 'off' },
     );
 
-    return mapMoexSearch(response, text);
+    const results = mapMoexSearch(response, searchQuery);
+
+    if (ofzIssue) {
+        return results
+            .filter(
+                (instrument) =>
+                    instrument.type === 'ofz_bond' &&
+                    (instrument.ticker.includes(ofzIssue) || instrument.name.includes(ofzIssue)),
+            )
+            .slice(0, 20);
+    }
+
+    return results.slice(0, 20);
 }
 
 export async function getInstrumentPrice(ticker: string) {
@@ -139,4 +155,46 @@ export async function getInstrumentPrice(ticker: string) {
         ticker: instrument.ticker,
         ...mapMoexPrice(response, instrument.currency),
     };
+}
+
+export async function getInstrumentsMarketData() {
+    const savedInstruments = await searchInstruments();
+    const incomeRows = await db
+        .select({
+            instrumentId: transactions.instrumentId,
+            amountKopecks: transactions.amountKopecks,
+        })
+        .from(transactions)
+        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
+        .where(and(
+            isNull(portfolios.archivedAt),
+            or(eq(transactions.type, 'DIVIDEND'), eq(transactions.type, 'COUPON')),
+        ));
+    const incomeByInstrument = new Map<number, number>();
+    for (const income of incomeRows) {
+        if (income.instrumentId) {
+            incomeByInstrument.set(
+                income.instrumentId,
+                (incomeByInstrument.get(income.instrumentId) ?? 0) + (income.amountKopecks ?? 0),
+            );
+        }
+    }
+    const results = await Promise.all(savedInstruments.map(async (instrument) => {
+        try {
+            return [instrument.ticker, await getInstrumentPrice(instrument.ticker)] as const;
+        } catch {
+            return [instrument.ticker, null] as const;
+        }
+    }));
+
+    return results.map(([ticker, quote]) => ({
+        ticker,
+        price: quote?.price ?? null,
+        changePercent: quote?.changePercent ?? null,
+        currency: quote?.currency ?? 'RUB',
+        updatedAt: quote?.updatedAt ?? null,
+        payoutsKopecks: incomeByInstrument.get(
+            savedInstruments.find((instrument) => instrument.ticker === ticker)?.id ?? 0,
+        ) ?? 0,
+    }));
 }

@@ -3,6 +3,7 @@ import type { MoexSecurityResponse } from './moex.types';
 export interface NormalizedInstrument {
     ticker: string;
     name: string;
+    isin: string | null;
     type: string;
     exchange: string;
     board: string | null;
@@ -14,6 +15,7 @@ export interface NormalizedInstrument {
 
 export interface NormalizedPrice {
     price: number | null;
+    changePercent: number | null;
     currency: string;
     updatedAt: string;
 }
@@ -106,6 +108,8 @@ export function mapMoexSecurity(
         'NAME',
     );
 
+    const isin = getDescriptionValue(description, 'ISIN');
+
     const type =
         getDescriptionValue(description, 'TYPE') ??
         getDescriptionValue(description, 'GROUP') ??
@@ -156,6 +160,7 @@ export function mapMoexSecurity(
     return {
         ticker: String(ticker),
         name: String(shortName ?? fullName ?? ticker),
+        isin: isin ? String(isin) : null,
         type: String(type),
         exchange: 'MOEX',
         board,
@@ -174,17 +179,22 @@ export function mapMoexPrice(
     const row = marketdata?.data[0];
 
     if (!marketdata || !row) {
-        return { price: null, currency, updatedAt: new Date().toISOString() };
+        return { price: null, changePercent: null, currency, updatedAt: new Date().toISOString() };
     }
 
     for (const field of ['LAST', 'MARKETPRICE', 'LCLOSEPRICE']) {
         const value = asNumber(getBoardValue(marketdata, row, field));
         if (value !== null) {
-            return { price: value, currency, updatedAt: new Date().toISOString() };
+            return {
+                price: value,
+                changePercent: asNumber(getBoardValue(marketdata, row, 'LASTCHANGEPRCNT')),
+                currency,
+                updatedAt: String(getBoardValue(marketdata, row, 'SYSTIME') ?? new Date().toISOString()),
+            };
         }
     }
 
-    return { price: null, currency, updatedAt: new Date().toISOString() };
+    return { price: null, changePercent: null, currency, updatedAt: new Date().toISOString() };
 }
 
 export function mapMoexTradingParameters(
@@ -233,10 +243,17 @@ export function mapMoexSearch(
         })
         .filter((item): item is MoexSearchResult => item !== null)
         .sort((left, right) => {
-            const normalizedQuery = query.toUpperCase();
-            const leftRank = left.ticker === normalizedQuery ? 0 : left.ticker.startsWith(normalizedQuery) ? 1 : 2;
-            const rightRank = right.ticker === normalizedQuery ? 0 : right.ticker.startsWith(normalizedQuery) ? 1 : 2;
-            return leftRank - rightRank || left.ticker.localeCompare(right.ticker);
-        })
-        .slice(0, 20);
+            const normalizedQuery = query.trim().toLocaleLowerCase('ru-RU');
+            const rank = (item: MoexSearchResult) => {
+                const ticker = item.ticker.toLocaleLowerCase('ru-RU');
+                const name = item.name.toLocaleLowerCase('ru-RU');
+                if (ticker === normalizedQuery) return 0;
+                if (name === normalizedQuery) return 1;
+                if (ticker.startsWith(normalizedQuery)) return 2;
+                if (name.startsWith(normalizedQuery)) return 3;
+                if (item.type.includes('index')) return 5;
+                return 4;
+            };
+            return rank(left) - rank(right) || left.ticker.localeCompare(right.ticker);
+        });
 }

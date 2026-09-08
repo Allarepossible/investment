@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
+    "test": "npm run build && node --test dist/analytics/*.test.js",
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"

@@ -8,6 +8,7 @@ const dataDirectory = path.resolve(process.cwd(), 'data');
 mkdirSync(dataDirectory, { recursive: true });
 
 const sqlite = new Database(path.join(dataDirectory, 'portfolio.db'));
+sqlite.pragma('foreign_keys = ON');
 
 export const db = drizzle(sqlite);
 
