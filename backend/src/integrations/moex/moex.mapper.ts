@@ -15,11 +15,22 @@ export interface NormalizedInstrument {
 
 export interface NormalizedPrice {
     price: number | null;
+    pricePercent: number | null;
     changePercent: number | null;
     currency: string;
     updatedAt: string;
     faceValue: number | null;
     accruedInterest: number | null;
+    couponValue: number | null;
+    couponPeriodDays: number | null;
+    nextCouponDate: string | null;
+    offerDate: string | null;
+    maturityDate: string | null;
+    yieldToMaturityPercent: number | null;
+    yieldToOfferPercent: number | null;
+    currentYieldPercent: number | null;
+    issueCapitalizationRub: number | null;
+    sectorId: string | null;
 }
 
 export interface MoexSearchResult {
@@ -78,6 +89,13 @@ function asNumber(value: unknown): number | null {
     }
 
     return null;
+}
+
+function asDate(value: unknown): string | null {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value === '0000-00-00') {
+        return null;
+    }
+    return value;
 }
 
 export function mapMoexSecurity(
@@ -189,39 +207,95 @@ export function mapMoexPrice(
     const accruedInterest = security && response.securities
         ? asNumber(getBoardValue(response.securities, security, 'ACCRUEDINT'))
         : null;
+    const couponValue = security && response.securities
+        ? asNumber(getBoardValue(response.securities, security, 'COUPONVALUE'))
+        : null;
+    const couponPeriodDays = security && response.securities
+        ? asNumber(getBoardValue(response.securities, security, 'COUPONPERIOD'))
+        : null;
+    const nextCouponDate = security && response.securities
+        ? asDate(getBoardValue(response.securities, security, 'NEXTCOUPON'))
+        : null;
+    const offerDate = security && response.securities
+        ? asDate(getBoardValue(response.securities, security, 'OFFERDATE'))
+        : null;
+    const maturityDate = security && response.securities
+        ? asDate(getBoardValue(response.securities, security, 'MATDATE'))
+        : null;
+    const yieldToMaturityPercent = row && marketdata
+        ? asNumber(getBoardValue(marketdata, row, 'YIELD'))
+        : null;
+    const yieldToOfferPercent = row && marketdata
+        ? asNumber(getBoardValue(marketdata, row, 'YIELDTOOFFER'))
+        : null;
+    const issueCapitalizationRub = row && marketdata
+        ? asNumber(getBoardValue(marketdata, row, 'ISSUECAPITALIZATION'))
+        : null;
+    const sectorValue = security && response.securities
+        ? getBoardValue(response.securities, security, 'SECTORID')
+        : null;
+    const sectorId = typeof sectorValue === 'string' && sectorValue.trim()
+        ? sectorValue
+        : null;
 
-    if (!marketdata || !row) {
+    const marketPrice = marketdata && row
+        ? ['LAST', 'MARKETPRICE', 'LCLOSEPRICE']
+            .map((field) => asNumber(getBoardValue(marketdata, row, field)))
+            .find((value): value is number => value !== null) ?? null
+        : null;
+    // If there was no trade in the current session, MOEX still provides the
+    // previous weighted/closing price in the security block.
+    const previousPrice = security && response.securities
+        ? ['PREVWAPRICE', 'PREVPRICE', 'PREVLEGALCLOSEPRICE']
+            .map((field) => asNumber(getBoardValue(response.securities!, security, field)))
+            .find((value): value is number => value !== null) ?? null
+        : null;
+    const price = marketPrice ?? previousPrice;
+
+    if (price !== null) {
         return {
-            price: null,
-            changePercent: null,
+            price,
+            pricePercent: null,
+            changePercent: marketdata && row
+                ? asNumber(getBoardValue(marketdata, row, 'LASTCHANGEPRCNT'))
+                : null,
             currency,
-            updatedAt: new Date().toISOString(),
+            updatedAt: marketdata && row
+                ? String(getBoardValue(marketdata, row, 'SYSTIME') ?? new Date().toISOString())
+                : new Date().toISOString(),
             faceValue,
             accruedInterest,
+            couponValue,
+            couponPeriodDays,
+            nextCouponDate,
+            offerDate,
+            maturityDate,
+            yieldToMaturityPercent,
+            yieldToOfferPercent,
+            currentYieldPercent: null,
+            issueCapitalizationRub,
+            sectorId,
         };
-    }
-
-    for (const field of ['LAST', 'MARKETPRICE', 'LCLOSEPRICE']) {
-        const value = asNumber(getBoardValue(marketdata, row, field));
-        if (value !== null) {
-            return {
-                price: value,
-                changePercent: asNumber(getBoardValue(marketdata, row, 'LASTCHANGEPRCNT')),
-                currency,
-                updatedAt: String(getBoardValue(marketdata, row, 'SYSTIME') ?? new Date().toISOString()),
-                faceValue,
-                accruedInterest,
-            };
-        }
     }
 
     return {
         price: null,
+        pricePercent: null,
         changePercent: null,
         currency,
         updatedAt: new Date().toISOString(),
         faceValue,
         accruedInterest,
+        couponValue,
+        couponPeriodDays,
+        nextCouponDate,
+        offerDate,
+        maturityDate,
+        yieldToMaturityPercent,
+        yieldToOfferPercent,
+        currentYieldPercent: null,
+        issueCapitalizationRub,
+        sectorId,
     };
 }
 

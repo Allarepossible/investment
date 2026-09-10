@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'node:path';
 import {
     addInstrument,
     getInstrument,
@@ -8,9 +9,17 @@ import {
     InstrumentNotFoundError,
     searchInstruments,
     searchMoexInstruments,
+    syncInstrumentLogos,
 } from './instruments/instrument.service';
+import {
+    getInstrumentDetails,
+    getInstrumentGrowth,
+    getInstrumentPriceHistory,
+    historyRanges,
+    type HistoryRange,
+} from './instruments/instrument-details.service';
 import { applyMigrations } from './db';
-import { getPortfolioAnalytics } from './analytics/analytics.service';
+import { getBondAnalytics, getPortfolioAnalytics } from './analytics/analytics.service';
 import {
     createPortfolio,
     deletePortfolio,
@@ -30,7 +39,9 @@ import {
 import {
     BrokerReportImportError,
     importTbankBrokerReport,
+    importTbankBrokerXlsxReport,
     previewTbankBrokerReport,
+    previewTbankBrokerXlsxReport,
 } from './imports/tbank-report.service';
 
 const app = express();
@@ -40,8 +51,12 @@ const corsOrigins = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.t
 
 
 app.use(cors({ origin: corsOrigins?.length ? corsOrigins : true }));
-// An 8 MB PDF becomes roughly 10.7 MB after Base64 encoding in JSON.
+// An 8 MB PDF or Excel report becomes roughly 10.7 MB after Base64 encoding in JSON.
 app.use(express.json({ limit: '12mb' }));
+app.use('/api/logos', express.static(path.resolve(process.cwd(), 'data', 'logos'), {
+    // The file name is stable per ticker, so do not let a browser keep an outdated rebrand forever.
+    maxAge: 0,
+}));
 
 app.get('/api/health', (_req, res) => {
     res.json({
@@ -91,6 +106,43 @@ app.get('/api/instruments/market-data', async (_req, res, next) => {
     }
 });
 
+app.post('/api/instruments/logos/sync', async (req, res, next) => {
+    try {
+        res.json(await syncInstrumentLogos(req.body?.force === true));
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get('/api/instruments/:ticker/details', async (req, res, next) => {
+    try {
+        res.json(await getInstrumentDetails(req.params.ticker));
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get('/api/instruments/:ticker/history', async (req, res, next) => {
+    const range = typeof req.query.range === 'string' ? req.query.range : '1y';
+    if (!historyRanges.includes(range as HistoryRange)) {
+        res.status(400).json({ error: 'Unsupported history range' });
+        return;
+    }
+    try {
+        res.json(await getInstrumentPriceHistory(req.params.ticker, range as HistoryRange));
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get('/api/instruments/:ticker/growth', async (req, res, next) => {
+    try {
+        res.json(await getInstrumentGrowth(req.params.ticker));
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.get('/api/instruments/:ticker/price', async (req, res, next) => {
     try {
         res.json(await getInstrumentPrice(req.params.ticker));
@@ -130,6 +182,19 @@ app.get('/api/portfolios/aggregate', async (_req, res, next) => {
 app.get('/api/analytics', async (_req, res, next) => {
     try {
         res.json(await getPortfolioAnalytics());
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get('/api/analytics/bonds', async (req, res, next) => {
+    const portfolioId = req.query.portfolioId === undefined ? undefined : Number(req.query.portfolioId);
+    if (portfolioId !== undefined && (!Number.isInteger(portfolioId) || portfolioId < 1)) {
+        res.status(400).json({ error: 'portfolioId must be a positive integer' });
+        return;
+    }
+    try {
+        res.json(await getBondAnalytics(portfolioId));
     } catch (error) {
         next(error);
     }
@@ -219,6 +284,27 @@ app.post('/api/imports/tbank/commit', async (req, res, next) => {
         res.status(201).json(await importTbankBrokerReport(
             portfolioId,
             req.body?.pdfBase64,
+            req.body?.sourceIds,
+        ));
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/imports/tbank/xlsx/preview', async (req, res, next) => {
+    try {
+        res.json(await previewTbankBrokerXlsxReport(req.body?.xlsxBase64));
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/imports/tbank/xlsx/commit', async (req, res, next) => {
+    const portfolioId = Number(req.body?.portfolioId);
+    try {
+        res.status(201).json(await importTbankBrokerXlsxReport(
+            portfolioId,
+            req.body?.xlsxBase64,
             req.body?.sourceIds,
         ));
     } catch (error) {

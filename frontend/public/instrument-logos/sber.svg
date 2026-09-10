@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <defs>
+    <linearGradient id="sber-gradient" x1="6" x2="34" y1="8" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00a650"/>
+      <stop offset=".52" stop-color="#16a998"/>
+      <stop offset="1" stop-color="#4c76d9"/>
+    </linearGradient>
+  </defs>
+  <circle cx="20" cy="20" r="17" fill="url(#sber-gradient)"/>
+  <circle cx="20" cy="20" r="13.2" fill="none" stroke="#fff" stroke-width="2.2"/>
+  <path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.7" d="m11.6 20.3 5.25 5.05L29.3 13.4"/>
+</svg>

@@ -31,6 +31,13 @@ export const instruments = sqliteTable('instruments', {
 
     minPriceStep: real('min_price_step'),
 
+    // The image itself is stored locally in data/logos; the database keeps only its public API path.
+    logoPath: text('logo_path'),
+    logoStatus: text('logo_status')
+        .notNull()
+        .default('pending'),
+    logoSource: text('logo_source'),
+
     createdAt: integer('created_at', {
         mode: 'timestamp',
     }).notNull(),

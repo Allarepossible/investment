@@ -1,6 +1,6 @@
-import { and, asc, eq, isNull, like, or } from 'drizzle-orm';
+import { asc, eq, like, or } from 'drizzle-orm';
 import { db } from '../db';
-import { instruments, portfolios, transactions } from '../db/schema';
+import { instruments } from '../db/schema';
 import { MoexClient } from '../integrations/moex/moex.client';
 import {
     mapMoexPrice,
@@ -14,6 +14,7 @@ import type {
     MoexSearchResponse,
     MoexSecurityResponse,
 } from '../integrations/moex/moex.types';
+import { ensureInstrumentLogo, syncInstrumentLogos } from './logo.service';
 
 const moex = new MoexClient();
 
@@ -27,6 +28,41 @@ function isBond(instrument: { market: string | null; type: string }) {
     return instrument.market === 'bonds' || instrument.type.includes('bond');
 }
 
+function isFund(instrument: { type: string }) {
+    return instrument.type.includes('etf') || instrument.type.includes('fund') || instrument.type.includes('ppif');
+}
+
+function isShare(instrument: { market: string | null; type: string }) {
+    return !isFund(instrument) && (instrument.market === 'shares' || instrument.type.includes('share'));
+}
+
+const sectorByTicker: Record<string, string> = {
+    SBER: 'Финансы', SBERP: 'Финансы', VTBR: 'Финансы', MOEX: 'Финансы',
+    GAZP: 'Нефть и газ', LKOH: 'Нефть и газ', ROSN: 'Нефть и газ', SIBN: 'Нефть и газ', NVTK: 'Нефть и газ',
+    GMKN: 'Металлы и добыча', MAGN: 'Металлы и добыча', NLMK: 'Металлы и добыча', CHMF: 'Металлы и добыча', PLZL: 'Металлы и добыча', RUAL: 'Металлы и добыча',
+    MTSS: 'Телеком', RTKM: 'Телеком',
+    YDEX: 'ИТ', VKCO: 'ИТ', ASTR: 'ИТ', POSI: 'ИТ', HEAD: 'ИТ',
+    OZON: 'Потребительский сектор', MGNT: 'Потребительский сектор', FIVE: 'Потребительский сектор', LENT: 'Потребительский сектор', MVID: 'Потребительский сектор',
+    HYDR: 'Электроэнергетика', IRAO: 'Электроэнергетика', FEES: 'Электроэнергетика', OGKB: 'Электроэнергетика',
+    AFLT: 'Транспорт', PHOR: 'Химия', DOMRF: 'Недвижимость', SMLT: 'Недвижимость', X5: 'Потребительский сектор', MRKC: 'Электроэнергетика',
+};
+
+const sectorByMoexId: Record<string, string> = {
+    financials: 'Финансы', finance: 'Финансы', oil_gas: 'Нефть и газ', energy: 'Нефть и газ',
+    metals_mining: 'Металлы и добыча', consumer: 'Потребительский сектор', telecom: 'Телеком',
+    information_technology: 'ИТ', it: 'ИТ', utilities: 'Электроэнергетика', transport: 'Транспорт',
+};
+
+function getSector(
+    instrument: { ticker: string; market: string | null; type: string },
+    sectorId: string | null,
+) {
+    if (isBond(instrument)) return instrument.type.includes('ofz') ? 'Гособлигации' : 'Облигации';
+    if (isFund(instrument)) return 'Фонд';
+    if (sectorId) return sectorByMoexId[sectorId.toLowerCase()] ?? sectorId;
+    return sectorByTicker[instrument.ticker] ?? null;
+}
+
 function normalizeInstrumentPrice(
     quote: ReturnType<typeof mapMoexPrice>,
     instrument: { market: string | null; type: string },
@@ -36,11 +72,15 @@ function normalizeInstrumentPrice(
     // MOEX quotes bonds as a percentage of face value. Most Russian bonds have
     // a 1,000 RUB nominal; this fallback also keeps old saved instruments valid.
     const faceValue = quote.faceValue ?? 1_000;
+    const price = (quote.price * faceValue) / 100 + (quote.accruedInterest ?? 0);
     return {
         ...quote,
-        rawPrice: quote.price,
-        price: (quote.price * faceValue) / 100 + (quote.accruedInterest ?? 0),
+        pricePercent: quote.price,
+        price,
         faceValue,
+        currentYieldPercent: quote.couponValue && quote.couponPeriodDays
+            ? Number((((quote.couponValue * 365) / quote.couponPeriodDays / price) * 100).toFixed(2))
+            : null,
         priceIncludesAccruedInterest: true,
     };
 }
@@ -97,8 +137,13 @@ export async function addInstrument(ticker: string) {
             },
         });
 
+    const savedInstrument = await getInstrument(values.ticker);
+    // A missing third-party image must never prevent a security from being added.
+    await ensureInstrumentLogo(savedInstrument);
     return getInstrument(values.ticker);
 }
+
+export { syncInstrumentLogos };
 
 export async function getInstrument(ticker: string) {
     const [instrument] = await db
@@ -179,44 +224,46 @@ export async function getInstrumentPrice(ticker: string) {
     };
 }
 
+async function getUsdRubRate() {
+    try {
+        const response = await moex.get<MoexMarketDataResponse>(
+            '/engines/currency/markets/selt/boards/CETS/securities/USD000UTSTOM.json',
+            { 'iss.meta': 'off', 'iss.only': 'marketdata,securities' },
+        );
+        return mapMoexPrice(response, 'RUB').price;
+    } catch {
+        return null;
+    }
+}
+
 export async function getInstrumentsMarketData() {
     const savedInstruments = await searchInstruments();
-    const incomeRows = await db
-        .select({
-            instrumentId: transactions.instrumentId,
-            amountKopecks: transactions.amountKopecks,
-        })
-        .from(transactions)
-        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
-        .where(and(
-            isNull(portfolios.archivedAt),
-            or(eq(transactions.type, 'DIVIDEND'), eq(transactions.type, 'COUPON')),
-        ));
-    const incomeByInstrument = new Map<number, number>();
-    for (const income of incomeRows) {
-        if (income.instrumentId) {
-            incomeByInstrument.set(
-                income.instrumentId,
-                (incomeByInstrument.get(income.instrumentId) ?? 0) + (income.amountKopecks ?? 0),
-            );
-        }
-    }
-    const results = await Promise.all(savedInstruments.map(async (instrument) => {
-        try {
-            return [instrument.ticker, await getInstrumentPrice(instrument.ticker)] as const;
-        } catch {
-            return [instrument.ticker, null] as const;
-        }
-    }));
+    const needsUsdRubRate = savedInstruments.some((instrument) => isShare(instrument));
+    const [results, usdRubRate] = await Promise.all([
+        Promise.all(savedInstruments.map(async (instrument) => {
+            try {
+                return [instrument, await getInstrumentPrice(instrument.ticker)] as const;
+            } catch {
+                return [instrument, null] as const;
+            }
+        })),
+        needsUsdRubRate ? getUsdRubRate() : Promise.resolve(null),
+    ]);
 
-    return results.map(([ticker, quote]) => ({
-        ticker,
+    return results.map(([instrument, quote]) => ({
+        ticker: instrument.ticker,
         price: quote?.price ?? null,
         changePercent: quote?.changePercent ?? null,
         currency: quote?.currency ?? 'RUB',
         updatedAt: quote?.updatedAt ?? null,
-        payoutsKopecks: incomeByInstrument.get(
-            savedInstruments.find((instrument) => instrument.ticker === ticker)?.id ?? 0,
-        ) ?? 0,
+        sector: getSector(instrument, quote?.sectorId ?? null),
+        marketCapUsd: isShare(instrument) && quote?.issueCapitalizationRub && usdRubRate
+            ? quote.issueCapitalizationRub / usdRubRate
+            : null,
+        // MOEX ISS does not publish company financial statements or LTM ratios.
+        // Returning null is safer than showing an outdated or inferred multiple.
+        pe: null,
+        ps: null,
+        payoutRatio: null,
     }));
 }
