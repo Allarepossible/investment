@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import './App.css';
 import { InstrumentFinancialChart, InstrumentPriceChart } from './components/InstrumentCharts';
+import { PortfolioAnalyticsPage, type PortfolioPerformance } from './components/PortfolioAnalytics';
 import { PortfolioCharts } from './components/PortfolioCharts';
 
 type Instrument = { id: number; ticker: string; name: string; isin: string | null; type: string; board: string | null; market: string | null; currency: string; lotSize: number | null; minPriceStep: number | null; logoPath: string | null; logoStatus: 'pending' | 'found' | 'missing' };
@@ -14,14 +15,33 @@ type BrokerReportFormat = 'pdf' | 'xlsx';
 type BrokerImportPreview = { broker: 'Т-Банк'; format: 'PDF' | 'Excel'; period: string | null; operations: BrokerImportOperation[]; warnings: string[]; summary: { trades: number; deposits: number; withdrawals: number; commissionsKopecks: number } };
 type Analytics = { cashKopecks: number; securitiesValueKopecks: number; totalValueKopecks: number; netContributionsKopecks: number; totalPnlKopecks: number; positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; averageCostKopecks: number; marketValueKopecks: number | null; unrealizedPnlKopecks: number | null; allocationPercent: number | null }> };
 type BondAnalytics = { positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; investedKopecks: number; pricePercent: number | null; nextCouponDate: string | null; nextCouponKopecks: number | null; offerDate: string | null; maturityDate: string | null; creditRating: string | null; currentYieldPercent: number | null; yieldToMaturityPercent: number | null }> };
-type Page = 'overview' | 'portfolios' | 'operations' | 'instruments' | 'instrument';
+type Page = 'overview' | 'portfolios' | 'operations' | 'instruments' | 'analytics' | 'instrument';
 type OverviewTab = 'profit' | 'bonds' | 'assets';
 type InstrumentSortKey = 'instrument' | 'type' | 'sector' | 'price' | 'pe' | 'ps' | 'payout' | 'marketCap' | 'parameters';
 type SortDirection = 'asc' | 'desc';
 type HistoryRange = 'all' | '5y' | '1y' | '1m' | '1w' | '1d';
 type InstrumentDetails = {
   instrument: Instrument;
-  quote: { ticker: string; price: number | null; currency: string; updatedAt: string; issueCapitalizationRub: number | null };
+  quote: {
+    ticker: string;
+    price: number | null;
+    currency: string;
+    updatedAt: string;
+    issueCapitalizationRub: number | null;
+    changePercent: number | null;
+    bond: {
+      faceValueRub: number | null;
+      remainingFaceValueRub: number | null;
+      maturityDate: string | null;
+      reliability: string | null;
+      rating: string | null;
+      couponYieldPercent: number | null;
+      currentYieldPercent: number | null;
+      modifiedCurrentYieldPercent: number | null;
+      yieldToMaturityPercent: number | null;
+      effectiveYieldPercent: number | null;
+    } | null;
+  };
   metrics: { epsRub: number | null; marketCapRub: number | null; dividendYieldPercent: number | null; dividendPerShareRub: number | null; payoutRatioPercent: number | null };
   positions: Array<{ portfolioId: number; portfolioName: string; quantity: number; averageCostKopecks: number; investedKopecks: number; marketValueKopecks: number | null; unrealizedPnlKopecks: number | null }>;
   financials: Array<{ year: number; revenueRub: number | null; netIncomeRub: number | null }>;
@@ -47,8 +67,8 @@ const priceRub = (value: number | null) => value === null ? '—' : `${value.toL
 const toKopecks = (value: string) => Math.round(Number(value.replace(/\s/g, '').replace(',', '.')) * 100);
 const tradeTypes = new Set(['BUY', 'SELL']);
 const instrumentTypes = new Set(['BUY', 'SELL', 'DIVIDEND', 'COUPON']);
-const pageTitles: Record<Page, string> = { overview: 'Обзор', portfolios: 'Портфели', operations: 'Операции', instruments: 'Инструменты', instrument: 'Инструмент' };
-const navigationPages: Page[] = ['overview', 'portfolios', 'operations', 'instruments'];
+const pageTitles: Record<Page, string> = { overview: 'Обзор', portfolios: 'Портфели', operations: 'Операции', instruments: 'Инструменты', analytics: 'Аналитика', instrument: 'Инструмент' };
+const navigationPages: Page[] = ['overview', 'portfolios', 'operations', 'analytics', 'instruments'];
 const historyRangeOptions: Array<{ value: HistoryRange; label: string }> = [
   { value: 'all', label: 'Всё время' }, { value: '5y', label: '5 лет' }, { value: '1y', label: 'Год' },
   { value: '1m', label: 'Месяц' }, { value: '1w', label: 'Неделя' }, { value: '1d', label: 'День' },
@@ -98,6 +118,27 @@ function SortableInstrumentHeader({ label, sortKey, activeSort, onSort, title }:
   </th>;
 }
 
+function BondMetricsPanel({ bond }: { bond: NonNullable<InstrumentDetails['quote']['bond']> }) {
+  return <section className="bond-detail-panel">
+    <div className="instrument-section-heading"><div><p className="section-label">ОБЩЕЕ</p><h2>Параметры выпуска</h2></div><span>данные MOEX</span></div>
+    <div className="bond-details-grid">
+      <div><span>Номинал</span><strong>{priceRub(bond.faceValueRub)}</strong></div>
+      <div><span>Остаточный номинал</span><strong>{priceRub(bond.remainingFaceValueRub)}</strong></div>
+      <div><span>Дата погашения</span><strong>{date(bond.maturityDate)}</strong></div>
+      <div><span>Надёжность</span><strong className={bond.reliability === 'Высокая' ? 'positive' : ''}>{bond.reliability ?? '—'}</strong></div>
+      <div className="bond-rating"><span>Рейтинг</span><strong>{bond.rating ?? 'Нет данных'}</strong></div>
+    </div>
+    <div className="bond-yields-heading"><div><p className="section-label">ДОХОДНОСТЬ</p><h2>Доходность выпуска</h2></div><span>рассчитывается по котировке и купону</span></div>
+    <div className="bond-details-grid bond-yields-grid">
+      <div><span>Купонная доходность</span><strong>{percent(bond.couponYieldPercent)}</strong></div>
+      <div><span>Текущая доходность</span><strong>{percent(bond.currentYieldPercent)}</strong><small>без НКД</small></div>
+      <div><span>Мод. текущая доходность</span><strong>{percent(bond.modifiedCurrentYieldPercent)}</strong><small>с НКД</small></div>
+      <div><span>Доходность к погашению</span><strong>{percent(bond.yieldToMaturityPercent)}</strong><small>MOEX</small></div>
+      <div><span>Эффективная доходность</span><strong>{percent(bond.effectiveYieldPercent)}</strong><small>с капитализацией купонов</small></div>
+    </div>
+  </section>;
+}
+
 function InstrumentDetailPage({
   detail,
   growth,
@@ -123,6 +164,7 @@ function InstrumentDetailPage({
   if (!detail) return <section className="instrument-detail-loading" aria-live="polite"><i /><span>Загружаем карточку инструмента и рыночные данные…</span></section>;
 
   const { instrument, quote, metrics, positions, financials, fundamentalsSource } = detail;
+  const bond = quote.bond;
   const growthItems = [
     ['Неделя', growth?.oneWeek ?? null], ['Месяц', growth?.oneMonth ?? null], ['Год', growth?.oneYear ?? null], ['5 лет', growth?.fiveYears ?? null], ['Всё время', growth?.allTime ?? null],
   ] as const;
@@ -134,7 +176,7 @@ function InstrumentDetailPage({
     <button className="back-link" type="button" onClick={onBack}>← К инструментам</button>
     <div className="instrument-hero">
       <div className="instrument-hero-title"><InstrumentIcon instrument={instrument} /><div><p className="section-label">{instrument.type} · {instrument.board ?? 'MOEX'}</p><h1>{instrument.ticker}</h1><p>{instrument.name}{instrument.isin ? ` · ISIN ${instrument.isin}` : ''}</p></div></div>
-      <div className="instrument-current-price"><span>Текущая цена</span><strong>{quote.price === null ? 'Нет цены' : `${quote.price.toLocaleString('ru-RU')} ${quote.currency}`}</strong><small>{quote.updatedAt ? `MOEX: ${new Date(quote.updatedAt).toLocaleString('ru-RU')}` : 'Ожидаем котировку'}</small></div>
+      <div className="instrument-current-price"><span>{bond ? 'Цена с НКД' : 'Текущая цена'}</span><strong>{quote.price === null ? 'Нет цены' : `${quote.price.toLocaleString('ru-RU')} ${quote.currency}`}</strong><small>{quote.changePercent === null ? 'Изменение цены: —' : `Изменение цены: ${quote.changePercent > 0 ? '+' : ''}${quote.changePercent.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}%`}</small><small>{quote.updatedAt ? `MOEX: ${new Date(quote.updatedAt).toLocaleString('ru-RU')}` : 'Ожидаем котировку'}</small></div>
     </div>
 
     <section className="instrument-price-panel">
@@ -143,18 +185,18 @@ function InstrumentDetailPage({
       <div className={`instrument-chart-frame${isHistoryLoading ? ' loading' : ''}`}>{isHistoryLoading && <span className="chart-loading">Обновляем график…</span>}{historyError ? <p className="instrument-chart-empty">{historyError}</p> : history && <InstrumentPriceChart points={history.points} currency={quote.currency} />}</div>
     </section>
 
-    <section className="instrument-metrics" aria-label="Ключевые показатели инструмента">
+    {bond ? <BondMetricsPanel bond={bond} /> : <section className="instrument-metrics" aria-label="Ключевые показатели инструмента">
       <div><span>EPS</span><strong>{priceRub(metrics.epsRub)}</strong><small>прибыль на акцию</small></div>
       <div><span>Капитализация</span><strong>{rubCompact(metrics.marketCapRub)}</strong><small>по данным котировки MOEX</small></div>
       <div><span>Див. доходность</span><strong>{percent(metrics.dividendYieldPercent)}</strong><small>{metrics.payoutRatioPercent === null ? 'годовая оценка' : `payout ${percent(metrics.payoutRatioPercent)}`}</small></div>
       <div><span>Годовые выплаты</span><strong>{priceRub(metrics.dividendPerShareRub)}</strong><small>дивидендов на 1 акцию</small></div>
-    </section>
+    </section>}
 
     <section className="instrument-growth-panel"><div className="instrument-section-heading"><div><p className="section-label">ИЗМЕНЕНИЕ ЦЕНЫ</p><h2>Рост за период</h2></div><span>по закрытиям MOEX</span></div><div className="growth-grid">{growthItems.map(([label, value]) => <div key={label}><span>{label}</span><strong className={value !== null && value < 0 ? 'negative' : 'positive'}>{value === null ? '—' : `${value > 0 ? '+' : ''}${percent(value)}`}</strong></div>)}</div></section>
 
     <section className="instrument-holdings-panel"><div className="instrument-section-heading"><div><p className="section-label">МОИ ПОЗИЦИИ</p><h2>Инструмент в портфелях</h2></div><span>{positions.reduce((sum, position) => sum + position.quantity, 0).toLocaleString('ru-RU')} шт.</span></div>{positions.length ? <div className="instrument-holdings-table"><table><thead><tr><th>Портфель</th><th>Количество</th><th>Вложено</th><th>Средняя цена</th><th>Текущая оценка</th><th>Результат</th></tr></thead><tbody>{positions.map((position) => <tr key={position.portfolioId}><td><strong>{position.portfolioName}</strong></td><td>{position.quantity.toLocaleString('ru-RU')} шт.</td><td>{money(position.investedKopecks)}</td><td>{money(position.averageCostKopecks)}</td><td>{position.marketValueKopecks === null ? 'Нет цены' : money(position.marketValueKopecks)}</td><td className={position.unrealizedPnlKopecks !== null && position.unrealizedPnlKopecks < 0 ? 'negative' : 'positive'}>{position.unrealizedPnlKopecks === null ? '—' : money(position.unrealizedPnlKopecks)}</td></tr>)}</tbody></table></div> : <p className="instrument-empty">В этом инструменте пока нет открытых позиций. Добавьте покупку на странице «Операции».</p>}</section>
 
-    <section className="instrument-financial-panel"><div className="instrument-section-heading"><div><p className="section-label">ФИНАНСОВЫЕ ПОКАЗАТЕЛИ</p><h2>Выручка / доходы и чистая прибыль</h2></div><div className="financial-legend"><span><i className="revenue" />Выручка / доходы</span><span><i className="income" />Чистая прибыль</span></div></div><InstrumentFinancialChart financials={financials} />{fundamentalsSource ? <p className="fundamentals-source">Годовые данные: <a href={fundamentalsSource.url} target="_blank" rel="noreferrer">{fundamentalsSource.name}</a>. Для банков в первом столбце показаны чистые операционные доходы; показатели используются для справки и могут обновляться после публикации отчётности.</p> : <p className="fundamentals-source">MOEX ISS не публикует унифицированную финансовую отчётность, поэтому показатели доступны не для всех типов инструментов.</p>}</section>
+    {!bond && <section className="instrument-financial-panel"><div className="instrument-section-heading"><div><p className="section-label">ФИНАНСОВЫЕ ПОКАЗАТЕЛИ</p><h2>Выручка / доходы и чистая прибыль</h2></div><div className="financial-legend"><span><i className="revenue" />Выручка / доходы</span><span><i className="income" />Чистая прибыль</span></div></div><InstrumentFinancialChart financials={financials} />{fundamentalsSource ? <p className="fundamentals-source">Годовые данные: <a href={fundamentalsSource.url} target="_blank" rel="noreferrer">{fundamentalsSource.name}</a>. Для банков в первом столбце показаны чистые операционные доходы; показатели используются для справки и могут обновляться после публикации отчётности.</p> : <p className="fundamentals-source">MOEX ISS не публикует унифицированную финансовую отчётность, поэтому показатели доступны не для всех типов инструментов.</p>}</section>}
   </section>;
 }
 
@@ -176,6 +218,9 @@ function App() {
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [bondAnalytics, setBondAnalytics] = useState<BondAnalytics | null>(null);
   const [bondError, setBondError] = useState('');
+  const [portfolioPerformance, setPortfolioPerformance] = useState<PortfolioPerformance | null>(null);
+  const [isPerformanceLoading, setIsPerformanceLoading] = useState(false);
+  const [performanceError, setPerformanceError] = useState('');
   const [overviewTab, setOverviewTab] = useState<OverviewTab>('profit');
   const [transactionType, setTransactionType] = useState('DEPOSIT');
   const [transactionInstrumentId, setTransactionInstrumentId] = useState('');
@@ -185,6 +230,8 @@ function App() {
   const [commission, setCommission] = useState('0');
   const [operationDate, setOperationDate] = useState(new Date().toISOString().slice(0, 10));
   const [transactionMessage, setTransactionMessage] = useState('');
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<number>>(new Set());
+  const [isDeletingTransactions, setIsDeletingTransactions] = useState(false);
   const [brokerFileBase64, setBrokerFileBase64] = useState('');
   const [brokerReportFormat, setBrokerReportFormat] = useState<BrokerReportFormat | null>(null);
   const [brokerReportName, setBrokerReportName] = useState('');
@@ -193,6 +240,8 @@ function App() {
   const [brokerImportMessage, setBrokerImportMessage] = useState('');
   const [isBrokerImporting, setIsBrokerImporting] = useState(false);
   const [isLogoSyncing, setIsLogoSyncing] = useState(false);
+  const [selectedInstrumentIds, setSelectedInstrumentIds] = useState<Set<number>>(new Set());
+  const [isDeletingInstruments, setIsDeletingInstruments] = useState(false);
   const [activePage, setActivePage] = useState<Page>(() => getRouteFromHash().page);
   const [selectedInstrumentTicker, setSelectedInstrumentTicker] = useState<string | null>(() => getRouteFromHash().ticker);
   const [instrumentDetails, setInstrumentDetails] = useState<InstrumentDetails | null>(null);
@@ -207,16 +256,16 @@ function App() {
   const pendingBackendRequests = useRef(0);
   const initialLogoSyncStarted = useRef(false);
 
-  const apiFetch = useCallback(async (path: string, init?: RequestInit) => {
+  const apiFetch = useCallback(async (path: string, init?: RequestInit, timeoutMs = 20_000) => {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 20_000);
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
     pendingBackendRequests.current += 1;
     setIsBackendLoading(true);
     try {
       return await fetch(`${apiUrl}${path}`, { ...init, signal: controller.signal });
     } catch (error) {
       if (controller.signal.aborted) {
-        throw new Error('Сервер не ответил за 20 секунд. Проверьте соединение и попробуйте снова.', { cause: error });
+        throw new Error(`Сервер не ответил за ${Math.ceil(timeoutMs / 1000)} секунд. Проверьте соединение и попробуйте снова.`, { cause: error });
       }
       throw error;
     } finally {
@@ -337,6 +386,25 @@ function App() {
     } catch { setBondError('Не удалось получить данные по облигациям. Попробуйте обновить страницу.'); }
   }, [apiFetch]);
 
+  const loadPortfolioPerformance = useCallback(async (portfolioId: number | null, refresh = false) => {
+    setIsPerformanceLoading(true);
+    setPerformanceError('');
+    try {
+      const params = new URLSearchParams();
+      if (portfolioId) params.set('portfolioId', String(portfolioId));
+      if (refresh) params.set('refresh', 'true');
+      const suffix = params.size ? `?${params}` : '';
+      const response = await apiFetch(`/analytics/performance${suffix}`, undefined, 60_000);
+      const data = await response.json() as PortfolioPerformance | { error?: string };
+      if (!response.ok) throw new Error('error' in data ? data.error : 'Не удалось рассчитать аналитику.');
+      setPortfolioPerformance(data as PortfolioPerformance);
+    } catch (error) {
+      setPerformanceError(error instanceof Error ? error.message : 'Не удалось рассчитать аналитику.');
+    } finally {
+      setIsPerformanceLoading(false);
+    }
+  }, [apiFetch]);
+
   useEffect(() => {
     const timeout = window.setTimeout(() => void loadActivity(selectedPortfolioId), 0);
     return () => window.clearTimeout(timeout);
@@ -347,6 +415,12 @@ function App() {
     const timeout = window.setTimeout(() => void loadBondAnalytics(selectedPortfolioId), 0);
     return () => window.clearTimeout(timeout);
   }, [activePage, loadBondAnalytics, overviewTab, selectedPortfolioId]);
+
+  useEffect(() => {
+    if (activePage !== 'analytics') return;
+    const timeout = window.setTimeout(() => void loadPortfolioPerformance(selectedPortfolioId), 0);
+    return () => window.clearTimeout(timeout);
+  }, [activePage, loadPortfolioPerformance, selectedPortfolioId]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -515,13 +589,36 @@ function App() {
     } catch (error) { setTransactionMessage(error instanceof Error ? error.message : 'Не удалось добавить операцию'); }
   }
 
-  async function removeTransaction(id: number) {
-    if (!window.confirm('Удалить операцию? Позиции и показатели будут пересчитаны.')) return;
+  function toggleTransactionSelection(id: number) {
+    setSelectedTransactionIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllTransactions() {
+    const visibleIds = transactions.map((transaction) => transaction.id);
+    setSelectedTransactionIds((current) => visibleIds.length && visibleIds.every((id) => current.has(id))
+      ? new Set([...current].filter((id) => !visibleIds.includes(id)))
+      : new Set([...current, ...visibleIds]));
+  }
+
+  async function removeSelectedTransactions() {
+    const ids = transactions.filter((transaction) => selectedTransactionIds.has(transaction.id)).map((transaction) => transaction.id);
+    if (!ids.length) return;
+    if (!window.confirm(`Удалить операций: ${ids.length}? Отменить это действие будет нельзя. Позиции и показатели пересчитаются.`)) return;
+    setIsDeletingTransactions(true);
+    setTransactionMessage('');
     try {
-      const response = await apiFetch(`/transactions/${id}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error();
+      const response = await apiFetch('/transactions', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      const data = await response.json() as { deleted?: number; error?: string };
+      if (!response.ok) throw new Error(data.error ?? 'Не удалось удалить операции.');
+      setSelectedTransactionIds((current) => new Set([...current].filter((id) => !ids.includes(id))));
+      setTransactionMessage(`Удалено операций: ${data.deleted ?? ids.length}.`);
       await loadActivity(selectedPortfolioId);
-    } catch { setTransactionMessage('Не удалось удалить операцию.'); }
+    } catch (error) { setTransactionMessage(error instanceof Error ? error.message : 'Не удалось удалить операции.'); }
+    finally { setIsDeletingTransactions(false); }
   }
 
   function chooseBrokerReport(event: ChangeEvent<HTMLInputElement>) {
@@ -640,6 +737,35 @@ function App() {
     key,
     direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
   }));
+  function toggleInstrumentSelection(id: number) {
+    setSelectedInstrumentIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleAllInstruments() {
+    const visibleIds = sortedInstruments.map((instrument) => instrument.id);
+    setSelectedInstrumentIds((current) => visibleIds.length && visibleIds.every((id) => current.has(id))
+      ? new Set([...current].filter((id) => !visibleIds.includes(id)))
+      : new Set([...current, ...visibleIds]));
+  }
+  async function removeSelectedInstruments() {
+    const ids = sortedInstruments.filter((instrument) => selectedInstrumentIds.has(instrument.id)).map((instrument) => instrument.id);
+    if (!ids.length) return;
+    if (!window.confirm(`Удалить инструментов из сохранённого каталога: ${ids.length}? Инструменты с операциями удалить нельзя — сначала удалите связанные операции.`)) return;
+    setIsDeletingInstruments(true);
+    setMessage('');
+    try {
+      const response = await apiFetch('/instruments', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      const data = await response.json() as { deleted?: number; error?: string };
+      if (!response.ok) throw new Error(data.error ?? 'Не удалось удалить инструменты.');
+      setSelectedInstrumentIds((current) => new Set([...current].filter((id) => !ids.includes(id))));
+      setMessage(`Удалено инструментов: ${data.deleted ?? ids.length}.`);
+      await Promise.all([loadInstruments(query), loadTransactionInstruments(), loadMarketData()]);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Не удалось удалить инструменты.'); }
+    finally { setIsDeletingInstruments(false); }
+  }
   const sortedInstruments = [...instruments].sort((left, right) => {
     const quoteLeft = marketData[left.ticker];
     const quoteRight = marketData[right.ticker];
@@ -670,12 +796,16 @@ function App() {
     }
     return left.ticker.localeCompare(right.ticker, 'ru-RU');
   });
+  const selectedVisibleTransactions = transactions.filter((transaction) => selectedTransactionIds.has(transaction.id));
+  const selectedVisibleInstruments = sortedInstruments.filter((instrument) => selectedInstrumentIds.has(instrument.id));
+  const allVisibleTransactionsSelected = transactions.length > 0 && selectedVisibleTransactions.length === transactions.length;
+  const allVisibleInstrumentsSelected = sortedInstruments.length > 0 && selectedVisibleInstruments.length === sortedInstruments.length;
 
   return <div className="app-shell">
     <nav className="top-navigation" aria-label="Основная навигация"><a className="top-brand" href="#overview" onClick={() => setActivePage('overview')}><span>●</span> Капитал</a><div className="nav-links">{navigationPages.map((page) => <a key={page} className={activePage === page || (page === 'instruments' && activePage === 'instrument') ? 'active' : ''} href={`#${page}`} onClick={() => setActivePage(page)}>{pageTitles[page]}{page === 'portfolios' && <small>{portfolios.length}</small>}</a>)}</div><div className="profile">АБ</div></nav>
     <main className="app" id="top">
       <div className="topbar"><span className="crumb">Инвестиции <b>/</b> {activePage === 'instrument' && selectedInstrumentTicker ? `Инструменты / ${selectedInstrumentTicker}` : pageTitles[activePage]}</span>{isBackendLoading && <span className="backend-loading" role="status" aria-live="polite"><i />Загружаем данные…</span>}</div>
-      {activePage !== 'instrument' && <header className="page-intro"><p className="eyebrow">{activePage === 'overview' ? 'ОБЩИЙ ПРОФИЛЬ' : activePage === 'portfolios' ? 'УПРАВЛЕНИЕ СТРАТЕГИЯМИ' : activePage === 'operations' ? 'УЧЁТ И АНАЛИТИКА' : 'КАТАЛОГ РЫНКА'}</p><h1>{activePage === 'overview' ? 'Обзор портфеля' : activePage === 'portfolios' ? 'Мои портфели' : activePage === 'operations' ? 'Операции' : 'Инструменты'}</h1><p className="intro">{activePage === 'overview' ? 'Главные показатели по всем вашим инвестициям в одном месте.' : activePage === 'portfolios' ? 'Создавайте отдельные стратегии и управляйте ими независимо.' : activePage === 'operations' ? 'Добавляйте сделки, пополнения и выплаты — показатели пересчитаются автоматически.' : 'Находите бумаги Московской биржи и собирайте базу для своего портфеля.'}</p></header>}
+      {activePage !== 'instrument' && <header className="page-intro"><p className="eyebrow">{activePage === 'overview' ? 'ОБЩИЙ ПРОФИЛЬ' : activePage === 'portfolios' ? 'УПРАВЛЕНИЕ СТРАТЕГИЯМИ' : activePage === 'operations' ? 'УЧЁТ И АНАЛИТИКА' : activePage === 'analytics' ? 'ДОХОДНОСТЬ И РИСК' : 'КАТАЛОГ РЫНКА'}</p><h1>{activePage === 'overview' ? 'Обзор портфеля' : activePage === 'portfolios' ? 'Мои портфели' : activePage === 'operations' ? 'Операции' : activePage === 'analytics' ? 'Аналитика портфеля' : 'Инструменты'}</h1><p className="intro">{activePage === 'overview' ? 'Главные показатели по всем вашим инвестициям в одном месте.' : activePage === 'portfolios' ? 'Создавайте отдельные стратегии и управляйте ими независимо.' : activePage === 'operations' ? 'Добавляйте сделки, пополнения и выплаты — показатели пересчитаются автоматически.' : activePage === 'analytics' ? 'Смотрите историческую доходность, структуру и риски по всем портфелям или по отдельности.' : 'Находите бумаги Московской биржи и собирайте базу для своего портфеля.'}</p></header>}
       {activePage === 'instrument' && <InstrumentDetailPage detail={instrumentDetails} growth={instrumentGrowth} history={instrumentHistory} historyRange={historyRange} isHistoryLoading={isInstrumentHistoryLoading} historyError={instrumentHistoryError} error={instrumentDetailError} onRangeChange={setHistoryRange} onBack={closeInstrumentDetails} />}
       {activePage === 'overview' && <section className="overview-panel">
         <div className="activity-header"><div><p className="section-label">СВОДКА</p><h2>Состояние портфеля</h2></div><select value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} aria-label="Выберите портфель"><option value="">Все портфели</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></div>
@@ -684,6 +814,7 @@ function App() {
         {overviewTab === 'bonds' && <div className="bond-section"><div className="bond-heading"><div><h3>Облигации в портфеле</h3><p>Даты, доходности и купоны обновляются по данным MOEX.</p></div>{bondAnalytics && <span>{bondAnalytics.positions.length}</span>}</div>{bondError ? <p className="portfolio-empty">{bondError}</p> : bondAnalytics?.positions.length ? <div className="bond-table-wrap"><table><thead><tr><th>Актив</th><th>Кол-во</th><th>Вложено</th><th>Цена (%)</th><th>Дата следующей выплаты</th><th>Следующая выплата</th><th>Дата оферты</th><th>Дата погашения</th><th>Кредитный рейтинг</th><th>Текущая доходность</th><th>Доходность к погашению</th></tr></thead><tbody>{bondAnalytics.positions.map((bond) => <tr key={bond.instrumentId}><td><strong>{bond.ticker}</strong><span>{bond.name}</span></td><td>{bond.quantity} шт.</td><td><strong>{money(bond.investedKopecks)}</strong></td><td>{percent(bond.pricePercent)}</td><td>{date(bond.nextCouponDate)}</td><td>{bond.nextCouponKopecks === null ? '—' : money(bond.nextCouponKopecks)}</td><td>{date(bond.offerDate)}</td><td>{date(bond.maturityDate)}</td><td>{bond.creditRating ?? '—'}</td><td>{percent(bond.currentYieldPercent)}</td><td>{percent(bond.yieldToMaturityPercent)}</td></tr>)}</tbody></table></div> : <p className="portfolio-empty">{isBackendLoading ? 'Загружаем параметры облигаций…' : 'В выбранном портфеле пока нет облигаций.'}</p>}</div>}
         {overviewTab === 'assets' && <div className="positions overview-positions"><h3>Мои активы</h3>{analytics?.positions.length ? analytics.positions.map((position) => <div className="position-row" key={position.instrumentId}><div><strong>{position.ticker}</strong><span>{position.name} · {position.quantity} шт.</span></div><div><strong>{position.marketValueKopecks === null ? 'Нет цены' : money(position.marketValueKopecks)}</strong><span>{position.allocationPercent ?? 0}% портфеля</span></div></div>) : <p className="portfolio-empty">Добавьте операции, чтобы увидеть структуру портфеля.</p>}</div>}
       </section>}
+      {activePage === 'analytics' && <PortfolioAnalyticsPage performance={portfolioPerformance} portfolios={portfolios} selectedPortfolioId={selectedPortfolioId} isLoading={isPerformanceLoading} error={performanceError} onPortfolioChange={setSelectedPortfolioId} onRefresh={() => void loadPortfolioPerformance(selectedPortfolioId, true)} />}
       {activePage === 'portfolios' && <section className="portfolio-area" id="portfolio"><div className="portfolio-summary"><p className="section-label">ОБЩИЙ ПРОФИЛЬ</p><strong>{portfolios.length}</strong><span>{portfolios.length === 1 ? 'портфель' : portfolios.length > 1 && portfolios.length < 5 ? 'портфеля' : 'портфелей'}</span><p>Операции объединяются в общий инвестиционный профиль.</p></div><div className="portfolio-manager"><div><p className="section-label">ПОРТФЕЛИ</p><h2>Мои стратегии</h2></div><form onSubmit={savePortfolio}><label htmlFor="portfolio-name">Название портфеля</label><input id="portfolio-name" value={portfolioName} onChange={(event) => setPortfolioName(event.target.value)} placeholder="Например, Долгосрочный" maxLength={100} /><button>{editingPortfolioId ? 'Сохранить' : 'Создать'}</button>{editingPortfolioId && <button className="cancel-button" type="button" onClick={() => { setEditingPortfolioId(null); setPortfolioName(''); }}>Отмена</button>}</form>{portfolioMessage && <p className="portfolio-message" role="status">{portfolioMessage}</p>}<div className="portfolio-list">{portfolios.map((portfolio) => <div className="portfolio-row" key={portfolio.id}><span className="portfolio-dot" /><strong>{portfolio.name}</strong><button className="text-button" type="button" onClick={() => { setEditingPortfolioId(portfolio.id); setPortfolioName(portfolio.name); }}>Изменить</button><button className="text-button danger" type="button" onClick={() => void removePortfolio(portfolio.id)}>Удалить</button></div>)}{portfolios.length === 0 && <p className="portfolio-empty">Создайте первый портфель — например, «Долгосрочный» или «ИИС».</p>}</div></div></section>}
       {activePage === 'operations' && <section className="activity" id="activity"><div className="activity-header"><div><p className="section-label">ПОРТФЕЛЬНЫЙ УЧЁТ</p><h2>Операции и позиции</h2></div><select value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} aria-label="Выберите портфель"><option value="">Все портфели</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></div>
         <div className="metric-grid"><div><span>Стоимость</span><strong>{analytics ? money(analytics.totalValueKopecks) : '—'}</strong></div><div><span>Вложено</span><strong>{analytics ? money(analytics.netContributionsKopecks) : '—'}</strong></div><div><span>Результат</span><strong className={analytics && analytics.totalPnlKopecks < 0 ? 'negative' : 'positive'}>{analytics ? money(analytics.totalPnlKopecks) : '—'}</strong></div><div><span>Свободные деньги</span><strong>{analytics ? money(analytics.cashKopecks) : '—'}</strong></div></div>
@@ -702,15 +833,15 @@ function App() {
         </section>
         <div className="transaction-layout"><form className="transaction-form" onSubmit={addTransaction}><h3>Добавить операцию</h3><label className="field-label" htmlFor="transaction-portfolio">Портфель</label><select id="transaction-portfolio" value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} required><option value="">Выберите портфель</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select><label className="field-label" htmlFor="transaction-type">Тип операции</label><select id="transaction-type" value={transactionType} onChange={(event) => setTransactionType(event.target.value)}><option value="DEPOSIT">Пополнение счёта</option><option value="WITHDRAWAL">Вывод средств</option><option value="BUY">Покупка бумаги</option><option value="SELL">Продажа бумаги</option><option value="DIVIDEND">Дивиденды</option><option value="COUPON">Купон</option><option value="FEE">Комиссия брокера</option><option value="TAX">Налог</option></select>{instrumentTypes.has(transactionType) && <>{transactionInstruments.length ? <><label className="field-label" htmlFor="transaction-instrument">Инструмент</label><select id="transaction-instrument" value={transactionInstrumentId} onChange={(event) => setTransactionInstrumentId(event.target.value)} required><option value="">Выберите инструмент</option>{transactionInstruments.map((instrument) => <option key={instrument.id} value={instrument.id}>{instrument.ticker} — {instrument.name}</option>)}</select></> : <p className="instrument-help">Сначала <a href="#catalog">добавьте инструмент из MOEX</a> в каталог.</p>}</>}<label className="field-label" htmlFor="operation-date">Дата операции</label><input id="operation-date" type="date" value={operationDate} onChange={(event) => setOperationDate(event.target.value)} required />{tradeTypes.has(transactionType) ? <><label className="field-label" htmlFor="transaction-quantity">Количество, шт.</label><input id="transaction-quantity" inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="Например, 10" required /><label className="field-label" htmlFor="transaction-price">Цена за штуку, ₽</label><input id="transaction-price" inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="Например, 280,50" required /><label className="field-label" htmlFor="transaction-commission">Комиссия брокера, ₽</label><input id="transaction-commission" inputMode="decimal" value={commission} onChange={(event) => setCommission(event.target.value)} placeholder="0" required /></> : <><label className="field-label" htmlFor="transaction-amount">Сумма, ₽</label><input id="transaction-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Например, 100 000" required /><p className="form-hint">Комиссию и налог добавляйте отдельными операциями, чтобы учёт был прозрачным.</p></>}<button disabled={!selectedPortfolioId || (instrumentTypes.has(transactionType) && !transactionInstruments.length)}>Добавить операцию</button>{!selectedPortfolioId && <p className="form-hint">Выберите портфель, чтобы сохранить операцию.</p>}{transactionMessage && <p role="status">{transactionMessage}</p>}</form>
           <div className="positions"><h3>Текущие позиции</h3>{analytics?.positions.length ? analytics.positions.map((position) => <div className="position-row" key={position.instrumentId}><div><strong>{position.ticker}</strong><span>{position.quantity} шт. · средняя {money(position.averageCostKopecks)}</span></div><div><strong>{position.marketValueKopecks === null ? 'Нет цены' : money(position.marketValueKopecks)}</strong><span className={position.unrealizedPnlKopecks !== null && position.unrealizedPnlKopecks < 0 ? 'negative' : 'positive'}>{position.unrealizedPnlKopecks === null ? '—' : `${money(position.unrealizedPnlKopecks)} · ${position.allocationPercent ?? 0}%`}</span></div></div>) : <p className="portfolio-empty">Добавьте покупку — здесь появятся ваши позиции.</p>}</div></div>
-        <div className="history"><h3>История операций</h3>{transactions.length ? <table><thead><tr><th>Дата</th><th>Операция</th><th>Инструмент</th><th>Сумма</th><th /></tr></thead><tbody>{transactions.map((transaction) => <tr key={transaction.id}><td>{new Date(transaction.operationDate).toLocaleDateString('ru-RU')}</td><td>{transaction.type}</td><td>{transaction.ticker ?? 'Денежная операция'}</td><td>{transactionAmount(transaction) === null ? '—' : money(transactionAmount(transaction) ?? 0)}</td><td><button className="text-button danger" onClick={() => void removeTransaction(transaction.id)}>Удалить</button></td></tr>)}</tbody></table> : <p className="portfolio-empty">История операций пока пуста.</p>}</div>
+        <div className="history"><h3>История операций</h3>{transactions.length ? <><div className="batch-selection-bar"><label className="batch-select-all"><input type="checkbox" checked={allVisibleTransactionsSelected} onChange={toggleAllTransactions} disabled={isDeletingTransactions} /><span>{allVisibleTransactionsSelected ? 'Снять выбор' : 'Выбрать все'}</span></label><span className="batch-selection-count">Выбрано: {selectedVisibleTransactions.length} из {transactions.length}</span><button className="batch-delete-button" type="button" onClick={() => void removeSelectedTransactions()} disabled={!selectedVisibleTransactions.length || isDeletingTransactions}>{isDeletingTransactions ? 'Удаляем…' : `Удалить ${selectedVisibleTransactions.length || ''}`}</button></div><div className="history-table-wrap"><table><thead><tr><th><input type="checkbox" checked={allVisibleTransactionsSelected} onChange={toggleAllTransactions} disabled={isDeletingTransactions} aria-label="Выбрать все операции" /></th><th>Дата</th><th>Операция</th><th>Инструмент</th><th>Сумма</th></tr></thead><tbody>{transactions.map((transaction) => <tr key={transaction.id} className={selectedTransactionIds.has(transaction.id) ? 'selected' : ''}><td><input type="checkbox" checked={selectedTransactionIds.has(transaction.id)} onChange={() => toggleTransactionSelection(transaction.id)} disabled={isDeletingTransactions} aria-label={`Выбрать операцию ${transaction.type} от ${new Date(transaction.operationDate).toLocaleDateString('ru-RU')}`} /></td><td>{new Date(transaction.operationDate).toLocaleDateString('ru-RU')}</td><td>{transaction.type}</td><td>{transaction.ticker ?? 'Денежная операция'}</td><td>{transactionAmount(transaction) === null ? '—' : money(transactionAmount(transaction) ?? 0)}</td></tr>)}</tbody></table></div></> : <p className="portfolio-empty">История операций пока пуста.</p>}</div>
       </section>}
       {activePage === 'instruments' && <><section className="add-panel"><div><h2>Добавить по тикеру</h2><p>Например: SBER, SU26238RMFS4 или SBMX</p></div><form onSubmit={addInstrument}><label htmlFor="ticker">Тикер</label><input id="ticker" value={ticker} onChange={(event) => setTicker(event.target.value)} placeholder="Введите тикер" autoComplete="off" /><button disabled={isLoading}>{isLoading ? 'Загрузка…' : 'Добавить'}</button></form></section>
       <section className="catalog" id="catalog"><div className="catalog-heading"><div><p className="section-label">ПОИСК И ИМПОРТ</p><h2>Найдите инструмент</h2></div><div className="search-wrap"><span>⌕</span><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Тикер, название или номер ОФЗ" aria-label="Поиск" /></div></div>
         <p className="search-hint">Для ОФЗ достаточно номера выпуска — например, <b>26238</b>.</p>
         {message && <p className="message" role="status">{message}</p>}
         {moexResults.length > 0 && <div className="moex-results"><p className="moex-title">Результаты поиска MOEX</p>{moexResults.map((result) => <div className="moex-result" key={`${result.ticker}-${result.board ?? ''}`}><div className="ticker-mark">{result.ticker.slice(0, 2)}</div><div><strong>{result.ticker}</strong><span>{result.name}</span></div><small>{result.type}{result.board ? ` · ${result.board}` : ''}</small><button onClick={() => void importInstrument(result.ticker)} disabled={isLoading}>Добавить</button></div>)}</div>}
-        <div className="saved-heading"><div><p className="section-label">МОЯ БАЗА</p><h2>Сохранённые инструменты</h2></div><div className="saved-actions"><button className="refresh-button" onClick={() => void syncInstrumentLogos(true)} disabled={isLogoSyncing}>{isLogoSyncing ? 'Ищем логотипы…' : 'Найти логотипы'}</button><button className="refresh-button" onClick={() => void loadMarketData()}>Обновить данные</button><span className="count">{instruments.length}</span></div></div>
-        <div className="table-wrap"><table className="saved-instruments-table"><thead><tr><SortableInstrumentHeader label="Инструмент" sortKey="instrument" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Тип и рынок" sortKey="type" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Сектор" sortKey="sector" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Цена" sortKey="price" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="P/E" sortKey="pe" activeSort={instrumentSort} onSort={changeInstrumentSort} title="Капитализация к прибыли (Price/Earnings)" /><SortableInstrumentHeader label="P/S" sortKey="ps" activeSort={instrumentSort} onSort={changeInstrumentSort} title="Капитализация к выручке (Price/Sales)" /><SortableInstrumentHeader label="Payout" sortKey="payout" activeSort={instrumentSort} onSort={changeInstrumentSort} title="Доля чистой прибыли, направленная на дивиденды" /><SortableInstrumentHeader label="Капитализация, $" sortKey="marketCap" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Параметры" sortKey="parameters" activeSort={instrumentSort} onSort={changeInstrumentSort} /></tr></thead><tbody>{sortedInstruments.map((instrument) => { const quote = marketData[instrument.ticker]; const unavailableFundamental = 'Нужен отдельный источник финансовой отчётности: MOEX ISS не публикует LTM-мультипликаторы.'; return <tr key={instrument.id}><td><button className="instrument-cell-link" type="button" onClick={() => openInstrument(instrument.ticker)} title={`Открыть карточку ${instrument.ticker}`}><div className="instrument-cell"><InstrumentIcon instrument={instrument} /><div><strong>{instrument.ticker}</strong><span>{instrument.name}</span>{instrument.isin && <small className="isin">ISIN {instrument.isin}</small>}</div></div></button></td><td>{instrument.type}<br /><span>{instrument.board ?? '—'} · {instrument.currency}</span></td><td>{quote?.sector ?? '—'}</td><td>{quote?.price !== null && quote?.price !== undefined ? <><strong>{quote.price.toLocaleString('ru-RU')} {quote.currency}</strong><span className={quote.changePercent !== null && quote.changePercent < 0 ? 'negative' : 'positive'}>{quote.changePercent === null ? '—' : `${quote.changePercent > 0 ? '+' : ''}${quote.changePercent.toLocaleString('ru-RU')}%`}</span></> : <span>Нет цены</span>}</td><td title={quote?.pe === null ? unavailableFundamental : undefined}>{multiple(quote?.pe ?? null)}</td><td title={quote?.ps === null ? unavailableFundamental : undefined}>{multiple(quote?.ps ?? null)}</td><td title={quote?.payoutRatio === null ? unavailableFundamental : undefined}>{percent(quote?.payoutRatio ?? null)}</td><td>{usdCompact(quote?.marketCapUsd ?? null)}</td><td>Лот {instrument.lotSize ?? '—'} <i>·</i> Шаг {instrument.minPriceStep ?? '—'}</td></tr>; })}</tbody></table>{instruments.length === 0 && <div className="empty-state"><div>⌁</div><b>Ваш каталог пока пуст</b><p>Найдите ценную бумагу по тикеру или названию компании.</p></div>}</div>
+        <div className="saved-heading"><div><p className="section-label">МОЯ БАЗА</p><h2>Сохранённые инструменты</h2></div><div className="saved-actions"><button className="refresh-button" type="button" onClick={toggleAllInstruments} disabled={!sortedInstruments.length || isDeletingInstruments}>{allVisibleInstrumentsSelected ? 'Снять выбор' : 'Выбрать все'}</button><button className="refresh-button" type="button" onClick={() => void syncInstrumentLogos(true)} disabled={isLogoSyncing || isDeletingInstruments}>{isLogoSyncing ? 'Ищем логотипы…' : 'Найти логотипы'}</button><button className="refresh-button" type="button" onClick={() => void loadMarketData()} disabled={isDeletingInstruments}>Обновить данные</button><button className="batch-delete-button" type="button" onClick={() => void removeSelectedInstruments()} disabled={!selectedVisibleInstruments.length || isDeletingInstruments}>{isDeletingInstruments ? 'Удаляем…' : `Удалить ${selectedVisibleInstruments.length || ''}`}</button><span className="count">{instruments.length}</span></div></div>
+        <div className="table-wrap"><table className="saved-instruments-table"><thead><tr><th className="selection-column"><input type="checkbox" checked={allVisibleInstrumentsSelected} onChange={toggleAllInstruments} disabled={isDeletingInstruments} aria-label="Выбрать все сохранённые инструменты" /></th><SortableInstrumentHeader label="Инструмент" sortKey="instrument" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Тип и рынок" sortKey="type" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Сектор" sortKey="sector" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Цена" sortKey="price" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="P/E" sortKey="pe" activeSort={instrumentSort} onSort={changeInstrumentSort} title="Капитализация к прибыли (Price/Earnings)" /><SortableInstrumentHeader label="P/S" sortKey="ps" activeSort={instrumentSort} onSort={changeInstrumentSort} title="Капитализация к выручке (Price/Sales)" /><SortableInstrumentHeader label="Payout" sortKey="payout" activeSort={instrumentSort} onSort={changeInstrumentSort} title="Доля чистой прибыли, направленная на дивиденды" /><SortableInstrumentHeader label="Капитализация, $" sortKey="marketCap" activeSort={instrumentSort} onSort={changeInstrumentSort} /><SortableInstrumentHeader label="Параметры" sortKey="parameters" activeSort={instrumentSort} onSort={changeInstrumentSort} /></tr></thead><tbody>{sortedInstruments.map((instrument) => { const quote = marketData[instrument.ticker]; const unavailableFundamental = 'Нужен отдельный источник финансовой отчётности: MOEX ISS не публикует LTM-мультипликаторы.'; return <tr key={instrument.id} className={selectedInstrumentIds.has(instrument.id) ? 'selected' : ''}><td className="selection-column"><input type="checkbox" checked={selectedInstrumentIds.has(instrument.id)} onChange={() => toggleInstrumentSelection(instrument.id)} disabled={isDeletingInstruments} aria-label={`Выбрать ${instrument.ticker}`} /></td><td><button className="instrument-cell-link" type="button" onClick={() => openInstrument(instrument.ticker)} title={`Открыть карточку ${instrument.ticker}`}><div className="instrument-cell"><InstrumentIcon instrument={instrument} /><div><strong>{instrument.ticker}</strong><span>{instrument.name}</span>{instrument.isin && <small className="isin">ISIN {instrument.isin}</small>}</div></div></button></td><td>{instrument.type}<br /><span>{instrument.board ?? '—'} · {instrument.currency}</span></td><td>{quote?.sector ?? '—'}</td><td>{quote?.price !== null && quote?.price !== undefined ? <><strong>{quote.price.toLocaleString('ru-RU')} {quote.currency}</strong><span className={quote.changePercent !== null && quote.changePercent < 0 ? 'negative' : 'positive'}>{quote.changePercent === null ? '—' : `${quote.changePercent > 0 ? '+' : ''}${quote.changePercent.toLocaleString('ru-RU')}%`}</span></> : <span>Нет цены</span>}</td><td title={quote?.pe === null ? unavailableFundamental : undefined}>{multiple(quote?.pe ?? null)}</td><td title={quote?.ps === null ? unavailableFundamental : undefined}>{multiple(quote?.ps ?? null)}</td><td title={quote?.payoutRatio === null ? unavailableFundamental : undefined}>{percent(quote?.payoutRatio ?? null)}</td><td>{usdCompact(quote?.marketCapUsd ?? null)}</td><td>Лот {instrument.lotSize ?? '—'} <i>·</i> Шаг {instrument.minPriceStep ?? '—'}</td></tr>; })}</tbody></table>{instruments.length === 0 && <div className="empty-state"><div>⌁</div><b>Ваш каталог пока пуст</b><p>Найдите ценную бумагу по тикеру или названию компании.</p></div>}</div>
       </section></>}
     </main>
     <footer className="logo-attribution">Логотипы инструментов: <a href="https://www.allinvestview.com/tools/ticker-logos/">Ticker Logos by AllInvestView</a></footer>

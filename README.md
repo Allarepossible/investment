@@ -884,23 +884,27 @@ MOEX используется как источник рыночной инфо�
 * [x] Portfolio value
 * [x] Profit / Loss
 * [x] Allocation
-* [ ] Доходность
-* [ ] TWR
-* [ ] XIRR
-* [ ] Historical performance
+* [x] Доходность
+* [x] TWR
+* [x] XIRR
+* [x] Historical performance
+
+История строится по операциям и дневным закрытиям MOEX. TWR исключает внешние пополнения и выводы, XIRR показывает годовую денежно-взвешенную доходность с учётом дат потоков.
 
 ---
 
 ## Phase 6 — Risk
 
-* [ ] Volatility
-* [ ] Maximum drawdown
-* [ ] Sharpe ratio
-* [ ] Sortino ratio
-* [ ] Beta
-* [ ] Correlation
-* [ ] VaR
-* [ ] Concentration analysis
+* [x] Volatility
+* [x] Maximum drawdown
+* [x] Sharpe ratio
+* [x] Sortino ratio
+* [x] Beta
+* [x] Correlation
+* [x] VaR
+* [x] Concentration analysis
+
+Риск рассчитывается по дневным доходностям: волатильность и коэффициенты приведены к 252 торговым дням, Sharpe и Sortino используют нулевую безрисковую ставку, исторический VaR — однодневный уровень 95%. Бета и корреляция сравниваются с индексом IMOEX; в интерфейсе показывается покрытие ценовой истории и бумаги, для которых котировка недоступна.
 
 ---
 

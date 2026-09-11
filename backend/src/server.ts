@@ -6,7 +6,10 @@ import {
     getInstrument,
     getInstrumentPrice,
     getInstrumentsMarketData,
+    deleteInstruments,
+    InstrumentInUseError,
     InstrumentNotFoundError,
+    InstrumentValidationError,
     searchInstruments,
     searchMoexInstruments,
     syncInstrumentLogos,
@@ -20,6 +23,7 @@ import {
 } from './instruments/instrument-details.service';
 import { applyMigrations } from './db';
 import { getBondAnalytics, getPortfolioAnalytics } from './analytics/analytics.service';
+import { getPortfolioPerformance, invalidatePortfolioPerformance } from './analytics/portfolio-performance.service';
 import {
     createPortfolio,
     deletePortfolio,
@@ -31,6 +35,7 @@ import {
 import {
     createTransaction,
     deleteTransaction,
+    deleteTransactions,
     listTransactions,
     parseTransactionInput,
     TransactionNotFoundError,
@@ -84,6 +89,14 @@ app.post('/api/instruments', async (req, res, next) => {
     try {
         const instrument = await addInstrument(ticker);
         res.status(201).json(instrument);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.delete('/api/instruments', async (req, res, next) => {
+    try {
+        res.json(await deleteInstruments(req.body?.ids));
     } catch (error) {
         next(error);
     }
@@ -187,6 +200,19 @@ app.get('/api/analytics', async (_req, res, next) => {
     }
 });
 
+app.get('/api/analytics/performance', async (req, res, next) => {
+    const portfolioId = req.query.portfolioId === undefined ? undefined : Number(req.query.portfolioId);
+    if (portfolioId !== undefined && (!Number.isInteger(portfolioId) || portfolioId < 1)) {
+        res.status(400).json({ error: 'portfolioId must be a positive integer' });
+        return;
+    }
+    try {
+        res.json(await getPortfolioPerformance(portfolioId, req.query.refresh === 'true'));
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.get('/api/analytics/bonds', async (req, res, next) => {
     const portfolioId = req.query.portfolioId === undefined ? undefined : Number(req.query.portfolioId);
     if (portfolioId !== undefined && (!Number.isInteger(portfolioId) || portfolioId < 1)) {
@@ -251,6 +277,7 @@ app.delete('/api/portfolios/:id', async (req, res, next) => {
 
     try {
         await deletePortfolio(id);
+        invalidatePortfolioPerformance(id);
         res.status(204).end();
     } catch (error) {
         next(error);
@@ -281,11 +308,13 @@ app.post('/api/imports/tbank/preview', async (req, res, next) => {
 app.post('/api/imports/tbank/commit', async (req, res, next) => {
     const portfolioId = Number(req.body?.portfolioId);
     try {
-        res.status(201).json(await importTbankBrokerReport(
+        const result = await importTbankBrokerReport(
             portfolioId,
             req.body?.pdfBase64,
             req.body?.sourceIds,
-        ));
+        );
+        invalidatePortfolioPerformance(portfolioId);
+        res.status(201).json(result);
     } catch (error) {
         next(error);
     }
@@ -302,11 +331,13 @@ app.post('/api/imports/tbank/xlsx/preview', async (req, res, next) => {
 app.post('/api/imports/tbank/xlsx/commit', async (req, res, next) => {
     const portfolioId = Number(req.body?.portfolioId);
     try {
-        res.status(201).json(await importTbankBrokerXlsxReport(
+        const result = await importTbankBrokerXlsxReport(
             portfolioId,
             req.body?.xlsxBase64,
             req.body?.sourceIds,
-        ));
+        );
+        invalidatePortfolioPerformance(portfolioId);
+        res.status(201).json(result);
     } catch (error) {
         next(error);
     }
@@ -314,7 +345,19 @@ app.post('/api/imports/tbank/xlsx/commit', async (req, res, next) => {
 
 app.post('/api/transactions', async (req, res, next) => {
     try {
-        res.status(201).json(await createTransaction(parseTransactionInput(req.body)));
+        const transaction = await createTransaction(parseTransactionInput(req.body));
+        invalidatePortfolioPerformance(transaction.portfolioId);
+        res.status(201).json(transaction);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.delete('/api/transactions', async (req, res, next) => {
+    try {
+        const result = await deleteTransactions(req.body?.ids);
+        invalidatePortfolioPerformance();
+        res.json(result);
     } catch (error) {
         next(error);
     }
@@ -328,6 +371,7 @@ app.delete('/api/transactions/:id', async (req, res, next) => {
     }
     try {
         await deleteTransaction(id);
+        invalidatePortfolioPerformance();
         res.status(204).end();
     } catch (error) {
         next(error);
@@ -341,8 +385,13 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
         return;
     }
 
-    if (error instanceof TransactionValidationError || error instanceof BrokerReportImportError) {
+    if (error instanceof TransactionValidationError || error instanceof InstrumentValidationError || error instanceof BrokerReportImportError) {
         res.status(400).json({ error: error.message });
+        return;
+    }
+
+    if (error instanceof InstrumentInUseError) {
+        res.status(409).json({ error: error.message });
         return;
     }
 

@@ -1,6 +1,6 @@
-import { asc, eq, like, or } from 'drizzle-orm';
+import { asc, eq, inArray, like, or } from 'drizzle-orm';
 import { db } from '../db';
-import { instruments } from '../db/schema';
+import { instruments, transactions } from '../db/schema';
 import { MoexClient } from '../integrations/moex/moex.client';
 import {
     mapMoexPrice,
@@ -19,6 +19,8 @@ import { ensureInstrumentLogo, syncInstrumentLogos } from './logo.service';
 const moex = new MoexClient();
 
 export class InstrumentNotFoundError extends Error {}
+export class InstrumentInUseError extends Error {}
+export class InstrumentValidationError extends Error {}
 
 function normalizeTicker(ticker: string) {
     return ticker.trim().toUpperCase();
@@ -172,6 +174,34 @@ export async function searchInstruments(query = '') {
         .from(instruments)
         .where(where)
         .orderBy(asc(instruments.ticker));
+}
+
+export async function deleteInstruments(value: unknown) {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 500) {
+        throw new InstrumentValidationError('Выберите от 1 до 500 инструментов для удаления');
+    }
+    const ids = [...new Set(value)];
+    if (!ids.every((id) => Number.isSafeInteger(id) && id > 0)) {
+        throw new InstrumentValidationError('Идентификаторы инструментов должны быть положительными числами');
+    }
+    const instrumentIds = ids as number[];
+    const saved = await db.select().from(instruments).where(inArray(instruments.id, instrumentIds));
+    if (saved.length !== instrumentIds.length) {
+        throw new InstrumentNotFoundError('Один или несколько выбранных инструментов не найдены');
+    }
+
+    const references = await db
+        .select({ instrumentId: transactions.instrumentId })
+        .from(transactions)
+        .where(inArray(transactions.instrumentId, instrumentIds));
+    if (references.length) {
+        const referenced = new Set(references.flatMap((item) => item.instrumentId === null ? [] : [item.instrumentId]));
+        const tickers = saved.filter((instrument) => referenced.has(instrument.id)).map((instrument) => instrument.ticker);
+        throw new InstrumentInUseError(`Нельзя удалить инструменты с операциями: ${tickers.join(', ')}. Сначала удалите связанные операции.`);
+    }
+
+    await db.delete(instruments).where(inArray(instruments.id, instrumentIds));
+    return { deleted: instrumentIds.length };
 }
 
 export async function searchMoexInstruments(query: string) {

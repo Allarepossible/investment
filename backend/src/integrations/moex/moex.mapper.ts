@@ -20,8 +20,10 @@ export interface NormalizedPrice {
     currency: string;
     updatedAt: string;
     faceValue: number | null;
+    initialFaceValue: number | null;
     accruedInterest: number | null;
     couponValue: number | null;
+    couponPercent: number | null;
     couponPeriodDays: number | null;
     nextCouponDate: string | null;
     offerDate: string | null;
@@ -204,11 +206,17 @@ export function mapMoexPrice(
     const faceValue = security && response.securities
         ? asNumber(getBoardValue(response.securities, security, 'FACEVALUE'))
         : null;
+    const initialFaceValue = security && response.securities
+        ? asNumber(getBoardValue(response.securities, security, 'INITIALFACEVALUE'))
+        : null;
     const accruedInterest = security && response.securities
         ? asNumber(getBoardValue(response.securities, security, 'ACCRUEDINT'))
         : null;
     const couponValue = security && response.securities
         ? asNumber(getBoardValue(response.securities, security, 'COUPONVALUE'))
+        : null;
+    const couponPercent = security && response.securities
+        ? asNumber(getBoardValue(response.securities, security, 'COUPONPERCENT'))
         : null;
     const couponPeriodDays = security && response.securities
         ? asNumber(getBoardValue(response.securities, security, 'COUPONPERIOD'))
@@ -264,8 +272,10 @@ export function mapMoexPrice(
                 ? String(getBoardValue(marketdata, row, 'SYSTIME') ?? new Date().toISOString())
                 : new Date().toISOString(),
             faceValue,
+            initialFaceValue,
             accruedInterest,
             couponValue,
+            couponPercent,
             couponPeriodDays,
             nextCouponDate,
             offerDate,
@@ -285,8 +295,10 @@ export function mapMoexPrice(
         currency,
         updatedAt: new Date().toISOString(),
         faceValue,
+        initialFaceValue,
         accruedInterest,
         couponValue,
+        couponPercent,
         couponPeriodDays,
         nextCouponDate,
         offerDate,

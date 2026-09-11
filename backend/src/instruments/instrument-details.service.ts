@@ -309,6 +309,60 @@ function unavailableQuote(instrument: { ticker: string; currency: string }) {
         currency: instrument.currency,
         updatedAt: new Date().toISOString(),
         issueCapitalizationRub: null,
+        changePercent: null,
+        bond: null,
+    };
+}
+
+function roundMetric(value: number | null) {
+    return value === null || !Number.isFinite(value) ? null : Number(value.toFixed(2));
+}
+
+function buildBondMetrics(
+    quote: ReturnType<typeof mapMoexPrice>,
+    isOfz: boolean,
+) {
+    const remainingFaceValueRub = quote.faceValue;
+    // ISS provides INITIALFACEVALUE only for some amortising issues. For a
+    // regular OFZ without amortisation the initial and outstanding nominal are equal.
+    const faceValueRub = quote.initialFaceValue ?? remainingFaceValueRub;
+    const cleanPriceRub = quote.price !== null && remainingFaceValueRub !== null
+        ? (quote.price * remainingFaceValueRub) / 100
+        : null;
+    const dirtyPriceRub = cleanPriceRub === null
+        ? null
+        : cleanPriceRub + (quote.accruedInterest ?? 0);
+    const annualCouponRub = quote.couponValue !== null && quote.couponPeriodDays && quote.couponPeriodDays > 0
+        ? quote.couponValue * 365 / quote.couponPeriodDays
+        : null;
+    const couponYieldPercent = quote.couponPercent
+        ?? (annualCouponRub !== null && remainingFaceValueRub && remainingFaceValueRub > 0
+            ? roundMetric((annualCouponRub / remainingFaceValueRub) * 100)
+            : null);
+    const currentYieldPercent = annualCouponRub !== null && cleanPriceRub && cleanPriceRub > 0
+        ? roundMetric((annualCouponRub / cleanPriceRub) * 100)
+        : null;
+    const modifiedCurrentYieldPercent = annualCouponRub !== null && dirtyPriceRub && dirtyPriceRub > 0
+        ? roundMetric((annualCouponRub / dirtyPriceRub) * 100)
+        : null;
+    const periodsPerYear = quote.couponPeriodDays && quote.couponPeriodDays > 0
+        ? 365 / quote.couponPeriodDays
+        : null;
+    const effectiveYieldPercent = quote.yieldToMaturityPercent !== null && periodsPerYear
+        ? roundMetric(((1 + quote.yieldToMaturityPercent / 100 / periodsPerYear) ** periodsPerYear - 1) * 100)
+        : null;
+
+    return {
+        faceValueRub,
+        remainingFaceValueRub,
+        maturityDate: quote.maturityDate,
+        reliability: isOfz ? 'Высокая' : null,
+        rating: isOfz ? 'Государственная гарантия РФ' : null,
+        couponYieldPercent,
+        currentYieldPercent,
+        modifiedCurrentYieldPercent,
+        yieldToMaturityPercent: quote.yieldToMaturityPercent,
+        effectiveYieldPercent,
     };
 }
 
@@ -340,6 +394,8 @@ async function getDetailQuote(instrument: {
             currency: mapped.currency,
             updatedAt: mapped.updatedAt,
             issueCapitalizationRub: mapped.issueCapitalizationRub,
+            changePercent: mapped.changePercent,
+            bond: isBond ? buildBondMetrics(mapped, instrument.type.includes('ofz')) : null,
         };
     } catch {
         return unavailableQuote(instrument);

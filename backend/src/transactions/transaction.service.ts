@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { calculatePortfolioTotals, type PortfolioTransaction } from '../analytics/portfolio.analytics';
 import { db } from '../db';
 import { instruments, portfolios, transactions } from '../db/schema';
@@ -191,24 +191,42 @@ async function getInstrumentById(id: number) {
     return instrument;
 }
 
-export async function deleteTransaction(id: number) {
+function selectedIds(value: unknown) {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 500) {
+        throw new TransactionValidationError('Выберите от 1 до 500 операций');
+    }
+    const ids = [...new Set(value)];
+    if (!ids.every((id) => Number.isSafeInteger(id) && id > 0)) {
+        throw new TransactionValidationError('Идентификаторы операций должны быть положительными числами');
+    }
+    return ids as number[];
+}
+
+export async function deleteTransactions(value: unknown) {
+    const ids = selectedIds(value);
+    const selected = new Set(ids);
     const rows = await listTransactions();
-    const transaction = rows.find((item) => item.id === id);
-    if (!transaction) throw new TransactionNotFoundError(`Transaction ${id} was not found`);
+    const transactionsToDelete = rows.filter((item) => selected.has(item.id));
+    if (transactionsToDelete.length !== ids.length) {
+        throw new TransactionNotFoundError('Одна или несколько выбранных операций не найдены');
+    }
 
     try {
-        calculatePortfolioTotals(
-            toPortfolioTransactions(
-                rows.filter(
-                    (item) => item.id !== id && item.portfolioId === transaction.portfolioId,
-                ),
-            ),
-        );
+        for (const portfolioId of new Set(transactionsToDelete.map((item) => item.portfolioId))) {
+            calculatePortfolioTotals(toPortfolioTransactions(
+                rows.filter((item) => item.portfolioId === portfolioId && !selected.has(item.id)),
+            ));
+        }
     } catch {
         throw new TransactionValidationError(
-            'This operation cannot be deleted because later operations depend on it',
+            'Выбранные операции нельзя удалить: от них зависят более поздние операции',
         );
     }
 
-    await db.delete(transactions).where(eq(transactions.id, id));
+    await db.delete(transactions).where(inArray(transactions.id, ids));
+    return { deleted: ids.length };
+}
+
+export async function deleteTransaction(id: number) {
+    await deleteTransactions([id]);
 }
