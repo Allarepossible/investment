@@ -1,3 +1,5 @@
+import { useState, type PointerEvent } from 'react';
+
 export type PortfolioPerformance = {
   scope: 'aggregate' | 'portfolio';
   portfolioId: number | null;
@@ -45,6 +47,8 @@ const number = (value: number | null) => value === null ? '—' : value.toLocale
 const date = (value: string) => new Date(`${value}T12:00:00`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
 
 function ValueChart({ points }: { points: PortfolioPerformance['series'] }) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
   if (points.length < 2) return <p className="analytics-chart-empty">Для графика нужны котировки хотя бы за два дня.</p>;
 
   const width = 860;
@@ -59,15 +63,47 @@ function ValueChart({ points }: { points: PortfolioPerformance['series'] }) {
   const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(point.valueKopecks)}`).join(' ');
   const area = `${line} L ${x(points.length - 1)} ${height - padding.bottom} L ${x(0)} ${height - padding.bottom} Z`;
   const labelIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const activePoint = activeIndex === null ? null : points[activeIndex];
+  const activeX = activeIndex === null ? null : x(activeIndex);
+  const activeY = activePoint === null ? null : y(activePoint.valueKopecks);
+  const tooltipWidth = 184;
+  const tooltipHeight = 68;
+  const tooltipX = activeX === null
+    ? 0
+    : Math.max(padding.left, Math.min(width - padding.right - tooltipWidth, activeX > width - tooltipWidth - padding.right - 12 ? activeX - tooltipWidth - 12 : activeX + 12));
+  const tooltipY = activeY === null
+    ? 0
+    : activeY < padding.top + tooltipHeight + 14 ? activeY + 13 : activeY - tooltipHeight - 13;
+  const cashFlow = activePoint === null || activePoint.externalFlowKopecks === 0
+    ? '—'
+    : `${activePoint.externalFlowKopecks > 0 ? '+' : '−'}${money(Math.abs(activePoint.externalFlowKopecks))}`;
+
+  const selectClosestPoint = (event: PointerEvent<SVGSVGElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (!bounds.width) return;
+    const chartX = (event.clientX - bounds.left) / bounds.width * width;
+    const ratio = (chartX - padding.left) / (width - padding.left - padding.right);
+    setActiveIndex(Math.max(0, Math.min(points.length - 1, Math.round(ratio * (points.length - 1)))));
+  };
 
   return <div className="analytics-value-chart" role="img" aria-label="График изменения стоимости портфеля">
     <div className="analytics-chart-scale"><span>{money(maximum)}</span><span>{money(minimum)}</span></div>
-    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true" onPointerMove={selectClosestPoint} onPointerDown={selectClosestPoint} onPointerLeave={() => setActiveIndex(null)}>
       <defs><linearGradient id="portfolio-value-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#3a8dff" stopOpacity=".34" /><stop offset="1" stopColor="#3a8dff" stopOpacity="0" /></linearGradient></defs>
       {[0.2, 0.5, 0.8].map((point) => <line key={point} x1={padding.left} x2={width - padding.right} y1={padding.top + (height - padding.top - padding.bottom) * point} y2={padding.top + (height - padding.top - padding.bottom) * point} />)}
       <path d={area} className="analytics-area" />
       <path d={line} className="analytics-line" />
       {labelIndexes.map((index) => <g key={index}><circle cx={x(index)} cy={y(points[index].valueKopecks)} r="3.5" /><text x={x(index)} y={height - 7} textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'}>{date(points[index].date)}</text></g>)}
+      {activePoint !== null && activeX !== null && activeY !== null && <g className="analytics-hover-tooltip" pointerEvents="none">
+        <line className="analytics-hover-line" x1={activeX} x2={activeX} y1={padding.top} y2={height - padding.bottom} />
+        <circle className="analytics-hover-point" cx={activeX} cy={activeY} r="5" />
+        <rect className="analytics-hover-tooltip-box" x={tooltipX} y={tooltipY} width={tooltipWidth} height={tooltipHeight} rx="8" />
+        <text className="analytics-hover-tooltip-date" x={tooltipX + 11} y={tooltipY + 17}>{date(activePoint.date)}</text>
+        <text className="analytics-hover-tooltip-label" x={tooltipX + 11} y={tooltipY + 36}>Стоимость</text>
+        <text className="analytics-hover-tooltip-value" x={tooltipX + tooltipWidth - 11} y={tooltipY + 36} textAnchor="end">{money(activePoint.valueKopecks)}</text>
+        <text className="analytics-hover-tooltip-label" x={tooltipX + 11} y={tooltipY + 55}>Поток</text>
+        <text className="analytics-hover-tooltip-flow" x={tooltipX + tooltipWidth - 11} y={tooltipY + 55} textAnchor="end">{cashFlow}</text>
+      </g>}
     </svg>
   </div>;
 }
