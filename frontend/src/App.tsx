@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import './App.css';
 import { InstrumentFinancialChart, InstrumentPriceChart } from './components/InstrumentCharts';
-import { PortfolioAnalyticsPage, type PortfolioPerformance } from './components/PortfolioAnalytics';
+import { PortfolioAnalyticsPage, type PortfolioIncomeForecast, type PortfolioPerformance } from './components/PortfolioAnalytics';
 import { PortfolioCharts } from './components/PortfolioCharts';
 
 type Instrument = { id: number; ticker: string; name: string; isin: string | null; type: string; board: string | null; market: string | null; currency: string; lotSize: number | null; minPriceStep: number | null; logoPath: string | null; logoStatus: 'pending' | 'found' | 'missing' };
@@ -10,9 +10,10 @@ type MarketData = { ticker: string; price: number | null; changePercent: number 
 type MoexSearchResult = { ticker: string; name: string; type: string; board: string | null };
 type Portfolio = { id: number; name: string; createdAt: string };
 type Transaction = { id: number; type: string; quantity: number | null; priceKopecks: number | null; amountKopecks: number | null; accruedInterestKopecks: number; commissionKopecks: number; operationDate: string; ticker: string | null; name: string | null };
-type BrokerImportOperation = { type: 'BUY' | 'SELL' | 'DEPOSIT' | 'WITHDRAWAL'; ticker: string | null; quantity: number | null; priceKopecks: number | null; amountKopecks: number | null; accruedInterestKopecks: number; commissionKopecks: number; operationDate: string; sourceId: string; description: string };
+type BrokerImportOperation = { type: 'BUY' | 'SELL' | 'DEPOSIT' | 'WITHDRAWAL' | 'DIVIDEND' | 'COUPON' | 'FEE' | 'TAX'; ticker: string | null; quantity: number | null; priceKopecks: number | null; amountKopecks: number | null; accruedInterestKopecks: number; commissionKopecks: number; operationDate: string; sourceId: string; description: string; alreadyImported?: boolean };
 type BrokerReportFormat = 'pdf' | 'xlsx';
-type BrokerImportPreview = { broker: 'Т-Банк'; format: 'PDF' | 'Excel'; period: string | null; operations: BrokerImportOperation[]; warnings: string[]; summary: { trades: number; deposits: number; withdrawals: number; commissionsKopecks: number } };
+type BrokerName = 'tbank' | 'sber';
+type BrokerImportPreview = { broker: 'Т-Банк' | 'СберИнвестиции'; format: 'PDF' | 'Excel'; period: string | null; operations: BrokerImportOperation[]; warnings: string[]; summary: { trades: number; deposits: number; withdrawals: number; commissionsKopecks: number } };
 type Analytics = { cashKopecks: number; securitiesValueKopecks: number; totalValueKopecks: number; netContributionsKopecks: number; totalPnlKopecks: number; positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; averageCostKopecks: number; marketValueKopecks: number | null; unrealizedPnlKopecks: number | null; allocationPercent: number | null }> };
 type BondAnalytics = { positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; investedKopecks: number; pricePercent: number | null; nextCouponDate: string | null; nextCouponKopecks: number | null; offerDate: string | null; maturityDate: string | null; creditRating: string | null; currentYieldPercent: number | null; yieldToMaturityPercent: number | null }> };
 type Page = 'overview' | 'portfolios' | 'operations' | 'instruments' | 'analytics' | 'instrument';
@@ -221,6 +222,9 @@ function App() {
   const [portfolioPerformance, setPortfolioPerformance] = useState<PortfolioPerformance | null>(null);
   const [isPerformanceLoading, setIsPerformanceLoading] = useState(false);
   const [performanceError, setPerformanceError] = useState('');
+  const [incomeForecast, setIncomeForecast] = useState<PortfolioIncomeForecast | null>(null);
+  const [isIncomeForecastLoading, setIsIncomeForecastLoading] = useState(false);
+  const [incomeForecastError, setIncomeForecastError] = useState('');
   const [overviewTab, setOverviewTab] = useState<OverviewTab>('profit');
   const [transactionType, setTransactionType] = useState('DEPOSIT');
   const [transactionInstrumentId, setTransactionInstrumentId] = useState('');
@@ -233,6 +237,7 @@ function App() {
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<number>>(new Set());
   const [isDeletingTransactions, setIsDeletingTransactions] = useState(false);
   const [brokerFileBase64, setBrokerFileBase64] = useState('');
+  const [selectedBroker, setSelectedBroker] = useState<BrokerName>('tbank');
   const [brokerReportFormat, setBrokerReportFormat] = useState<BrokerReportFormat | null>(null);
   const [brokerReportName, setBrokerReportName] = useState('');
   const [brokerPreview, setBrokerPreview] = useState<BrokerImportPreview | null>(null);
@@ -405,6 +410,25 @@ function App() {
     }
   }, [apiFetch]);
 
+  const loadIncomeForecast = useCallback(async (portfolioId: number | null, refresh = false) => {
+    setIsIncomeForecastLoading(true);
+    setIncomeForecastError('');
+    try {
+      const params = new URLSearchParams();
+      if (portfolioId) params.set('portfolioId', String(portfolioId));
+      if (refresh) params.set('refresh', 'true');
+      const suffix = params.size ? `?${params}` : '';
+      const response = await apiFetch(`/analytics/income-forecast${suffix}`, undefined, 30_000);
+      const data = await response.json() as PortfolioIncomeForecast | { error?: string };
+      if (!response.ok) throw new Error('error' in data ? data.error : 'Не удалось рассчитать будущие выплаты.');
+      setIncomeForecast(data as PortfolioIncomeForecast);
+    } catch (error) {
+      setIncomeForecastError(error instanceof Error ? error.message : 'Не удалось рассчитать будущие выплаты.');
+    } finally {
+      setIsIncomeForecastLoading(false);
+    }
+  }, [apiFetch]);
+
   useEffect(() => {
     const timeout = window.setTimeout(() => void loadActivity(selectedPortfolioId), 0);
     return () => window.clearTimeout(timeout);
@@ -418,9 +442,12 @@ function App() {
 
   useEffect(() => {
     if (activePage !== 'analytics') return;
-    const timeout = window.setTimeout(() => void loadPortfolioPerformance(selectedPortfolioId), 0);
+    const timeout = window.setTimeout(() => {
+      void loadPortfolioPerformance(selectedPortfolioId);
+      void loadIncomeForecast(selectedPortfolioId);
+    }, 0);
     return () => window.clearTimeout(timeout);
-  }, [activePage, loadPortfolioPerformance, selectedPortfolioId]);
+  }, [activePage, loadIncomeForecast, loadPortfolioPerformance, selectedPortfolioId]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -653,22 +680,30 @@ function App() {
 
   async function previewBrokerReport() {
     if (!brokerFileBase64 || !brokerReportFormat) { setBrokerImportMessage('Сначала выберите PDF- или Excel-отчёт.'); return; }
+    if (selectedBroker === 'sber' && brokerReportFormat !== 'xlsx') {
+      setBrokerImportMessage('Для СберИнвестиций сейчас поддерживается только Excel-файл (.xlsx).');
+      return;
+    }
     setIsBrokerImporting(true); setBrokerImportMessage('');
     try {
+      const endpoint = selectedBroker === 'sber'
+        ? '/imports/sber/xlsx/preview'
+        : brokerReportFormat === 'xlsx' ? '/imports/tbank/xlsx/preview' : '/imports/tbank/preview';
       const response = await apiFetch(
-        brokerReportFormat === 'xlsx' ? '/imports/tbank/xlsx/preview' : '/imports/tbank/preview',
+        endpoint,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(brokerReportFormat === 'xlsx' ? { xlsxBase64: brokerFileBase64 } : { pdfBase64: brokerFileBase64 }),
+          body: JSON.stringify(selectedBroker === 'sber' || brokerReportFormat === 'xlsx' ? { xlsxBase64: brokerFileBase64 } : { pdfBase64: brokerFileBase64 }),
         },
       );
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Не удалось разобрать отчёт');
       const preview = data as BrokerImportPreview;
       setBrokerPreview(preview);
-      setSelectedBrokerOperationIds(new Set(preview.operations.map((operation) => operation.sourceId)));
-      setBrokerImportMessage('Предпросмотр готов. Проверьте операции перед добавлением.');
+      setSelectedBrokerOperationIds(new Set(preview.operations.filter((operation) => !operation.alreadyImported).map((operation) => operation.sourceId)));
+      const duplicates = preview.operations.filter((operation) => operation.alreadyImported).length;
+      setBrokerImportMessage(duplicates ? `Предпросмотр готов. Уже импортированных операций: ${duplicates}; они сняты с выбора.` : 'Предпросмотр готов. Проверьте операции перед добавлением.');
     } catch (error) { setBrokerImportMessage(error instanceof Error ? error.message : 'Не удалось разобрать отчёт'); }
     finally { setIsBrokerImporting(false); }
   }
@@ -680,19 +715,23 @@ function App() {
     if (!sourceIds.length) { setBrokerImportMessage('Отметьте хотя бы одну операцию для импорта.'); return; }
     setIsBrokerImporting(true); setBrokerImportMessage('');
     try {
+      const endpoint = selectedBroker === 'sber'
+        ? '/imports/sber/xlsx/commit'
+        : brokerReportFormat === 'xlsx' ? '/imports/tbank/xlsx/commit' : '/imports/tbank/commit';
       const response = await apiFetch(
-        brokerReportFormat === 'xlsx' ? '/imports/tbank/xlsx/commit' : '/imports/tbank/commit',
+        endpoint,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(brokerReportFormat === 'xlsx'
+          body: JSON.stringify(selectedBroker === 'sber' || brokerReportFormat === 'xlsx'
             ? { portfolioId: selectedPortfolioId, xlsxBase64: brokerFileBase64, sourceIds }
             : { portfolioId: selectedPortfolioId, pdfBase64: brokerFileBase64, sourceIds }),
         },
       );
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? 'Не удалось импортировать операции');
-      setBrokerImportMessage(`Добавлено операций: ${data.imported}. Комиссии и НКД уже учтены.`);
+      const skipped = typeof data.skippedAlreadyImported === 'number' ? data.skippedAlreadyImported : 0;
+      setBrokerImportMessage(`Добавлено операций: ${data.imported}.${skipped ? ` Пропущено уже импортированных: ${skipped}.` : ''} Комиссии и НКД уже учтены.`);
       setBrokerPreview(null); setSelectedBrokerOperationIds(new Set()); setBrokerFileBase64(''); setBrokerReportFormat(null); setBrokerReportName('');
       await Promise.all([loadActivity(selectedPortfolioId), loadInstruments(query), loadTransactionInstruments(), loadMarketData()]);
     } catch (error) { setBrokerImportMessage(error instanceof Error ? error.message : 'Не удалось импортировать операции'); }
@@ -717,6 +756,7 @@ function App() {
   }
 
   function toggleBrokerOperation(sourceId: string) {
+    if (brokerPreview?.operations.find((operation) => operation.sourceId === sourceId)?.alreadyImported) return;
     setSelectedBrokerOperationIds((current) => {
       const next = new Set(current);
       if (next.has(sourceId)) next.delete(sourceId); else next.add(sourceId);
@@ -726,12 +766,16 @@ function App() {
 
   function toggleAllBrokerOperations() {
     if (!brokerPreview) return;
-    setSelectedBrokerOperationIds((current) => current.size === brokerPreview.operations.length
-      ? new Set()
-      : new Set(brokerPreview.operations.map((operation) => operation.sourceId)));
+    const importableIds = brokerPreview.operations.filter((operation) => !operation.alreadyImported).map((operation) => operation.sourceId);
+    setSelectedBrokerOperationIds((current) => importableIds.length && importableIds.every((sourceId) => current.has(sourceId))
+      ? new Set([...current].filter((sourceId) => !importableIds.includes(sourceId)))
+      : new Set([...current, ...importableIds]));
   }
 
   const selectedBrokerOperations = brokerPreview?.operations.filter((operation) => selectedBrokerOperationIds.has(operation.sourceId)) ?? [];
+  const importableBrokerOperations = brokerPreview?.operations.filter((operation) => !operation.alreadyImported) ?? [];
+  const alreadyImportedBrokerOperations = brokerPreview?.operations.filter((operation) => operation.alreadyImported) ?? [];
+  const allImportableBrokerOperationsSelected = importableBrokerOperations.length > 0 && importableBrokerOperations.every((operation) => selectedBrokerOperationIds.has(operation.sourceId));
   const selectedBrokerCommissionKopecks = selectedBrokerOperations.reduce((total, operation) => total + operation.commissionKopecks, 0);
   const changeInstrumentSort = (key: InstrumentSortKey) => setInstrumentSort((current) => ({
     key,
@@ -814,19 +858,19 @@ function App() {
         {overviewTab === 'bonds' && <div className="bond-section"><div className="bond-heading"><div><h3>Облигации в портфеле</h3><p>Даты, доходности и купоны обновляются по данным MOEX.</p></div>{bondAnalytics && <span>{bondAnalytics.positions.length}</span>}</div>{bondError ? <p className="portfolio-empty">{bondError}</p> : bondAnalytics?.positions.length ? <div className="bond-table-wrap"><table><thead><tr><th>Актив</th><th>Кол-во</th><th>Вложено</th><th>Цена (%)</th><th>Дата следующей выплаты</th><th>Следующая выплата</th><th>Дата оферты</th><th>Дата погашения</th><th>Кредитный рейтинг</th><th>Текущая доходность</th><th>Доходность к погашению</th></tr></thead><tbody>{bondAnalytics.positions.map((bond) => <tr key={bond.instrumentId}><td><strong>{bond.ticker}</strong><span>{bond.name}</span></td><td>{bond.quantity} шт.</td><td><strong>{money(bond.investedKopecks)}</strong></td><td>{percent(bond.pricePercent)}</td><td>{date(bond.nextCouponDate)}</td><td>{bond.nextCouponKopecks === null ? '—' : money(bond.nextCouponKopecks)}</td><td>{date(bond.offerDate)}</td><td>{date(bond.maturityDate)}</td><td>{bond.creditRating ?? '—'}</td><td>{percent(bond.currentYieldPercent)}</td><td>{percent(bond.yieldToMaturityPercent)}</td></tr>)}</tbody></table></div> : <p className="portfolio-empty">{isBackendLoading ? 'Загружаем параметры облигаций…' : 'В выбранном портфеле пока нет облигаций.'}</p>}</div>}
         {overviewTab === 'assets' && <div className="positions overview-positions"><h3>Мои активы</h3>{analytics?.positions.length ? analytics.positions.map((position) => <div className="position-row" key={position.instrumentId}><div><strong>{position.ticker}</strong><span>{position.name} · {position.quantity} шт.</span></div><div><strong>{position.marketValueKopecks === null ? 'Нет цены' : money(position.marketValueKopecks)}</strong><span>{position.allocationPercent ?? 0}% портфеля</span></div></div>) : <p className="portfolio-empty">Добавьте операции, чтобы увидеть структуру портфеля.</p>}</div>}
       </section>}
-      {activePage === 'analytics' && <PortfolioAnalyticsPage performance={portfolioPerformance} portfolios={portfolios} selectedPortfolioId={selectedPortfolioId} isLoading={isPerformanceLoading} error={performanceError} onPortfolioChange={setSelectedPortfolioId} onRefresh={() => void loadPortfolioPerformance(selectedPortfolioId, true)} />}
+        {activePage === 'analytics' && <PortfolioAnalyticsPage performance={portfolioPerformance} incomeForecast={incomeForecast} portfolios={portfolios} selectedPortfolioId={selectedPortfolioId} isLoading={isPerformanceLoading} isIncomeForecastLoading={isIncomeForecastLoading} error={performanceError} incomeForecastError={incomeForecastError} onPortfolioChange={setSelectedPortfolioId} onRefresh={() => { void loadPortfolioPerformance(selectedPortfolioId, true); void loadIncomeForecast(selectedPortfolioId, true); }} />}
       {activePage === 'portfolios' && <section className="portfolio-area" id="portfolio"><div className="portfolio-summary"><p className="section-label">ОБЩИЙ ПРОФИЛЬ</p><strong>{portfolios.length}</strong><span>{portfolios.length === 1 ? 'портфель' : portfolios.length > 1 && portfolios.length < 5 ? 'портфеля' : 'портфелей'}</span><p>Операции объединяются в общий инвестиционный профиль.</p></div><div className="portfolio-manager"><div><p className="section-label">ПОРТФЕЛИ</p><h2>Мои стратегии</h2></div><form onSubmit={savePortfolio}><label htmlFor="portfolio-name">Название портфеля</label><input id="portfolio-name" value={portfolioName} onChange={(event) => setPortfolioName(event.target.value)} placeholder="Например, Долгосрочный" maxLength={100} /><button>{editingPortfolioId ? 'Сохранить' : 'Создать'}</button>{editingPortfolioId && <button className="cancel-button" type="button" onClick={() => { setEditingPortfolioId(null); setPortfolioName(''); }}>Отмена</button>}</form>{portfolioMessage && <p className="portfolio-message" role="status">{portfolioMessage}</p>}<div className="portfolio-list">{portfolios.map((portfolio) => <div className="portfolio-row" key={portfolio.id}><span className="portfolio-dot" /><strong>{portfolio.name}</strong><button className="text-button" type="button" onClick={() => { setEditingPortfolioId(portfolio.id); setPortfolioName(portfolio.name); }}>Изменить</button><button className="text-button danger" type="button" onClick={() => void removePortfolio(portfolio.id)}>Удалить</button></div>)}{portfolios.length === 0 && <p className="portfolio-empty">Создайте первый портфель — например, «Долгосрочный» или «ИИС».</p>}</div></div></section>}
       {activePage === 'operations' && <section className="activity" id="activity"><div className="activity-header"><div><p className="section-label">ПОРТФЕЛЬНЫЙ УЧЁТ</p><h2>Операции и позиции</h2></div><select value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} aria-label="Выберите портфель"><option value="">Все портфели</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></div>
         <div className="metric-grid"><div><span>Стоимость</span><strong>{analytics ? money(analytics.totalValueKopecks) : '—'}</strong></div><div><span>Вложено</span><strong>{analytics ? money(analytics.netContributionsKopecks) : '—'}</strong></div><div><span>Результат</span><strong className={analytics && analytics.totalPnlKopecks < 0 ? 'negative' : 'positive'}>{analytics ? money(analytics.totalPnlKopecks) : '—'}</strong></div><div><span>Свободные деньги</span><strong>{analytics ? money(analytics.cashKopecks) : '—'}</strong></div></div>
         <section className="broker-import" aria-labelledby="broker-import-title">
-          <div className="broker-import-heading"><div><p className="section-label">ИМПОРТ ИЗ БРОКЕРА</p><h3 id="broker-import-title">Загрузить отчёт Т‑Банка</h3><p>Поддерживаются PDF и Excel (.xlsx). Отметьте нужные операции и выберите портфель — данные появятся в нём только после подтверждения.</p></div><span className="broker-badge">{brokerPreview?.format ?? 'PDF / XLSX'}</span></div>
-          <div className="broker-upload"><label className="file-picker" htmlFor="broker-report">Выбрать файл<input id="broker-report" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" onChange={chooseBrokerReport} /></label><span>{brokerReportName || 'Файл не выбран'}</span><button type="button" onClick={() => void previewBrokerReport()} disabled={!brokerFileBase64 || isBrokerImporting}>{isBrokerImporting ? 'Обработка…' : 'Показать операции'}</button></div>
+          <div className="broker-import-heading"><div><p className="section-label">ИМПОРТ ИЗ БРОКЕРА</p><h3 id="broker-import-title">Загрузить отчёт {selectedBroker === 'sber' ? 'СберИнвестиций' : 'Т‑Банка'}</h3><p>{selectedBroker === 'sber' ? 'Поддерживается Excel (.xlsx) в формате экспорта «Операции». Комиссия берётся из исполненных заявок.' : 'Поддерживаются PDF и Excel (.xlsx).'} Отметьте нужные операции и выберите портфель — данные появятся в нём только после подтверждения.</p></div><span className="broker-badge">{brokerPreview?.format ?? (selectedBroker === 'sber' ? 'XLSX' : 'PDF / XLSX')}</span></div>
+          <div className="broker-upload"><label className="broker-picker" htmlFor="broker-name"><span>Брокер</span><select id="broker-name" value={selectedBroker} onChange={(event) => { setSelectedBroker(event.target.value as BrokerName); setBrokerPreview(null); setSelectedBrokerOperationIds(new Set()); setBrokerFileBase64(''); setBrokerReportFormat(null); setBrokerReportName(''); setBrokerImportMessage('Выберите файл для нового предпросмотра.'); }}><option value="tbank">Т‑Банк</option><option value="sber">СберИнвестиции</option></select></label><label className="file-picker" htmlFor="broker-report">Выбрать файл<input key={selectedBroker} id="broker-report" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" onChange={chooseBrokerReport} /></label><span>{brokerReportName || 'Файл не выбран'}</span><button type="button" onClick={() => void previewBrokerReport()} disabled={!brokerFileBase64 || isBrokerImporting}>{isBrokerImporting ? 'Обработка…' : 'Показать операции'}</button></div>
           {brokerImportMessage && <p className="broker-message" role="status">{brokerImportMessage}</p>}
           {brokerPreview && <div className="broker-preview">
-            <div className="broker-summary"><span><b>{brokerPreview.summary.trades}</b> сделок</span><span><b>{brokerPreview.summary.deposits}</b> пополнения</span>{brokerPreview.summary.withdrawals > 0 && <span><b>{brokerPreview.summary.withdrawals}</b> вывода</span>}<span>в отчёте комиссий {money(brokerPreview.summary.commissionsKopecks)}</span></div>
-            <div className="broker-selection-bar"><div><label className="field-label" htmlFor="broker-portfolio">Портфель для импорта</label><select id="broker-portfolio" value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)}><option value="">Выберите портфель</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></div><p>Выбрано <b>{selectedBrokerOperations.length}</b> из {brokerPreview.operations.length} · комиссии выбранных: <b>{money(selectedBrokerCommissionKopecks)}</b></p></div>
+            <div className="broker-summary"><span><b>{brokerPreview.summary.trades}</b> сделок</span><span><b>{brokerPreview.summary.deposits}</b> пополнения</span>{brokerPreview.summary.withdrawals > 0 && <span><b>{brokerPreview.summary.withdrawals}</b> вывода</span>}{alreadyImportedBrokerOperations.length > 0 && <span><b>{alreadyImportedBrokerOperations.length}</b> уже импортировано</span>}<span>в отчёте комиссий {money(brokerPreview.summary.commissionsKopecks)}</span></div>
+            <div className="broker-selection-bar"><div><label className="field-label" htmlFor="broker-portfolio">Портфель для импорта</label><select id="broker-portfolio" value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)}><option value="">Выберите портфель</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></div><p>Выбрано <b>{selectedBrokerOperations.length}</b> из {importableBrokerOperations.length} новых · комиссии выбранных: <b>{money(selectedBrokerCommissionKopecks)}</b></p></div>
             <p className="broker-period">{brokerPreview.broker}{brokerPreview.period ? ` · ${brokerPreview.period}` : ''}</p>
-            <div className="broker-preview-table"><table><thead><tr><th><input type="checkbox" checked={selectedBrokerOperations.length === brokerPreview.operations.length} onChange={toggleAllBrokerOperations} aria-label="Выбрать все операции" /></th><th>Дата</th><th>Операция</th><th>Инструмент</th><th>Сумма</th><th>Комиссия</th></tr></thead><tbody>{brokerPreview.operations.map((operation) => <tr key={operation.sourceId} className={selectedBrokerOperationIds.has(operation.sourceId) ? 'selected' : ''}><td><input type="checkbox" checked={selectedBrokerOperationIds.has(operation.sourceId)} onChange={() => toggleBrokerOperation(operation.sourceId)} aria-label={`Выбрать ${operation.description}`} /></td><td>{new Date(operation.operationDate).toLocaleDateString('ru-RU')}</td><td>{operation.description}</td><td>{operation.ticker ? `${operation.ticker} · ${operation.quantity} шт.` : 'Денежная операция'}</td><td>{money(importAmount(operation))}{operation.accruedInterestKopecks > 0 && <small>НКД {money(operation.accruedInterestKopecks)}</small>}</td><td>{operation.commissionKopecks ? money(operation.commissionKopecks) : '—'}</td></tr>)}</tbody></table></div>
+            <div className="broker-preview-table"><table><thead><tr><th><input type="checkbox" checked={allImportableBrokerOperationsSelected} onChange={toggleAllBrokerOperations} disabled={!importableBrokerOperations.length} aria-label="Выбрать все новые операции" /></th><th>Дата</th><th>Операция</th><th>Инструмент</th><th>Сумма</th><th>Комиссия</th><th>Статус</th></tr></thead><tbody>{brokerPreview.operations.map((operation) => <tr key={operation.sourceId} className={`${selectedBrokerOperationIds.has(operation.sourceId) ? 'selected' : ''}${operation.alreadyImported ? ' already-imported' : ''}`}><td><input type="checkbox" checked={selectedBrokerOperationIds.has(operation.sourceId)} onChange={() => toggleBrokerOperation(operation.sourceId)} disabled={operation.alreadyImported} aria-label={operation.alreadyImported ? `${operation.description} уже импортирована` : `Выбрать ${operation.description}`} /></td><td>{new Date(operation.operationDate).toLocaleDateString('ru-RU')}</td><td>{operation.description}</td><td>{operation.ticker ? `${operation.ticker} · ${operation.quantity} шт.` : 'Денежная операция'}</td><td>{money(importAmount(operation))}{operation.accruedInterestKopecks > 0 && <small>НКД {money(operation.accruedInterestKopecks)}</small>}</td><td>{operation.commissionKopecks ? money(operation.commissionKopecks) : '—'}</td><td>{operation.alreadyImported ? <span className="broker-imported-status">Уже импортирована</span> : <span className="broker-new-status">Новая</span>}</td></tr>)}</tbody></table></div>
             {brokerPreview.warnings.length > 0 && <ul className="broker-warnings">{brokerPreview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
             <div className="broker-confirm"><span>{selectedPortfolioId ? `${selectedBrokerOperations.length} отмеч. операций будут добавлены в «${portfolios.find((portfolio) => portfolio.id === selectedPortfolioId)?.name ?? 'выбранный портфель'}».` : 'Выберите портфель для добавления отмеченных операций.'}</span><button type="button" onClick={() => void commitBrokerImport()} disabled={!selectedPortfolioId || !selectedBrokerOperations.length || isBrokerImporting}>{isBrokerImporting ? 'Импорт…' : `Добавить ${selectedBrokerOperations.length} операций`}</button></div>
           </div>}

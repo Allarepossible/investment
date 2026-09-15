@@ -23,6 +23,7 @@ import {
 } from './instruments/instrument-details.service';
 import { applyMigrations } from './db';
 import { getBondAnalytics, getPortfolioAnalytics } from './analytics/analytics.service';
+import { getPortfolioIncomeForecast, invalidatePortfolioIncomeForecast } from './analytics/income-forecast.service';
 import { getPortfolioPerformance, invalidatePortfolioPerformance } from './analytics/portfolio-performance.service';
 import {
     createPortfolio,
@@ -43,8 +44,10 @@ import {
 } from './transactions/transaction.service';
 import {
     BrokerReportImportError,
+    importSberBrokerXlsxReport,
     importTbankBrokerReport,
     importTbankBrokerXlsxReport,
+    previewSberBrokerXlsxReport,
     previewTbankBrokerReport,
     previewTbankBrokerXlsxReport,
 } from './imports/tbank-report.service';
@@ -213,6 +216,19 @@ app.get('/api/analytics/performance', async (req, res, next) => {
     }
 });
 
+app.get('/api/analytics/income-forecast', async (req, res, next) => {
+    const portfolioId = req.query.portfolioId === undefined ? undefined : Number(req.query.portfolioId);
+    if (portfolioId !== undefined && (!Number.isInteger(portfolioId) || portfolioId < 1)) {
+        res.status(400).json({ error: 'portfolioId must be a positive integer' });
+        return;
+    }
+    try {
+        res.json(await getPortfolioIncomeForecast(portfolioId, req.query.refresh === 'true'));
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.get('/api/analytics/bonds', async (req, res, next) => {
     const portfolioId = req.query.portfolioId === undefined ? undefined : Number(req.query.portfolioId);
     if (portfolioId !== undefined && (!Number.isInteger(portfolioId) || portfolioId < 1)) {
@@ -278,6 +294,7 @@ app.delete('/api/portfolios/:id', async (req, res, next) => {
     try {
         await deletePortfolio(id);
         invalidatePortfolioPerformance(id);
+        invalidatePortfolioIncomeForecast(id);
         res.status(204).end();
     } catch (error) {
         next(error);
@@ -314,6 +331,7 @@ app.post('/api/imports/tbank/commit', async (req, res, next) => {
             req.body?.sourceIds,
         );
         invalidatePortfolioPerformance(portfolioId);
+        invalidatePortfolioIncomeForecast(portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -337,6 +355,31 @@ app.post('/api/imports/tbank/xlsx/commit', async (req, res, next) => {
             req.body?.sourceIds,
         );
         invalidatePortfolioPerformance(portfolioId);
+        invalidatePortfolioIncomeForecast(portfolioId);
+        res.status(201).json(result);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/imports/sber/xlsx/preview', async (req, res, next) => {
+    try {
+        res.json(await previewSberBrokerXlsxReport(req.body?.xlsxBase64));
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/imports/sber/xlsx/commit', async (req, res, next) => {
+    const portfolioId = Number(req.body?.portfolioId);
+    try {
+        const result = await importSberBrokerXlsxReport(
+            portfolioId,
+            req.body?.xlsxBase64,
+            req.body?.sourceIds,
+        );
+        invalidatePortfolioPerformance(portfolioId);
+        invalidatePortfolioIncomeForecast(portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -347,6 +390,7 @@ app.post('/api/transactions', async (req, res, next) => {
     try {
         const transaction = await createTransaction(parseTransactionInput(req.body));
         invalidatePortfolioPerformance(transaction.portfolioId);
+        invalidatePortfolioIncomeForecast(transaction.portfolioId);
         res.status(201).json(transaction);
     } catch (error) {
         next(error);
@@ -357,6 +401,7 @@ app.delete('/api/transactions', async (req, res, next) => {
     try {
         const result = await deleteTransactions(req.body?.ids);
         invalidatePortfolioPerformance();
+        invalidatePortfolioIncomeForecast();
         res.json(result);
     } catch (error) {
         next(error);
@@ -372,6 +417,7 @@ app.delete('/api/transactions/:id', async (req, res, next) => {
     try {
         await deleteTransaction(id);
         invalidatePortfolioPerformance();
+        invalidatePortfolioIncomeForecast();
         res.status(204).end();
     } catch (error) {
         next(error);

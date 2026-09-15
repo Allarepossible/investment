@@ -14,13 +14,17 @@ function isBond(instrument: { market: string | null; type: string }) {
     return instrument.market === 'bonds' || instrument.type.includes('bond');
 }
 
-export async function getPortfolioAnalytics(portfolioId?: number) {
+export async function getPortfolioPositionTotals(portfolioId?: number) {
     if (portfolioId) await getPortfolio(portfolioId);
     const activePortfolios = portfolioId ? null : new Set((await listPortfolios()).map((item) => item.id));
     const transactions = (await listTransactions(portfolioId)).filter(
         (transaction) => !activePortfolios || activePortfolios.has(transaction.portfolioId),
     );
-    const totals = calculatePortfolioTotals(transactions);
+    return calculatePortfolioTotals(transactions);
+}
+
+export async function getPortfolioAnalytics(portfolioId?: number) {
+    const totals = await getPortfolioPositionTotals(portfolioId);
     const quotes = await Promise.all(
         totals.positions.map(async (position) => {
             try {

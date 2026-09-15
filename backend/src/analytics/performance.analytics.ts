@@ -2,6 +2,7 @@ export type ValuationPoint = {
     date: string;
     valueKopecks: number;
     externalFlowKopecks: number;
+    profitKopecks?: number;
 };
 
 export type PricePoint = {
@@ -202,7 +203,7 @@ export function calculateRiskMetrics(points: ValuationPoint[], benchmarkPrices: 
     };
 }
 
-export function compactValuationPoints(points: ValuationPoint[], maxPoints = 250) {
+export function compactValuationPoints<T extends ValuationPoint>(points: T[], maxPoints = 250): T[] {
     if (points.length <= maxPoints) return points;
     const step = Math.ceil(points.length / maxPoints);
     const compacted = points.filter((_, index) => index % step === 0);

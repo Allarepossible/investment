@@ -14,10 +14,12 @@ import {
 
 type ImportedTradeType = 'BUY' | 'SELL';
 type ImportedCashType = 'DEPOSIT' | 'WITHDRAWAL';
+type ImportedIncomeType = 'DIVIDEND' | 'COUPON' | 'FEE' | 'TAX';
+type BrokerReportName = 'Т-Банк' | 'СберИнвестиции';
 export type BrokerReportFormat = 'PDF' | 'Excel';
 
 export type BrokerReportOperation = {
-    type: ImportedTradeType | ImportedCashType;
+    type: ImportedTradeType | ImportedCashType | ImportedIncomeType;
     ticker: string | null;
     quantity: number | null;
     priceKopecks: number | null;
@@ -27,10 +29,11 @@ export type BrokerReportOperation = {
     operationDate: string;
     sourceId: string;
     description: string;
+    alreadyImported?: boolean;
 };
 
 export type BrokerReportPreview = {
-    broker: 'Т-Банк';
+    broker: BrokerReportName;
     format: BrokerReportFormat;
     period: string | null;
     operations: BrokerReportOperation[];
@@ -70,13 +73,14 @@ function toIsoDate(value: string) {
 }
 
 function createPreview(
+    broker: BrokerReportName,
     format: BrokerReportFormat,
     period: string | null,
     operations: BrokerReportOperation[],
     warnings: string[],
 ): BrokerReportPreview {
     return {
-        broker: 'Т-Банк',
+        broker,
         format,
         period,
         operations,
@@ -87,6 +91,24 @@ function createPreview(
             withdrawals: operations.filter((operation) => operation.type === 'WITHDRAWAL').length,
             commissionsKopecks: operations.reduce((total, operation) => total + operation.commissionKopecks, 0),
         },
+    };
+}
+
+async function markAlreadyImported(preview: BrokerReportPreview): Promise<BrokerReportPreview> {
+    const sourceIds = [...new Set(preview.operations.map((operation) => operation.sourceId))];
+    if (!sourceIds.length) return preview;
+    const existing = await db
+        .select({ sourceId: transactions.sourceId })
+        .from(transactions)
+        .where(inArray(transactions.sourceId, sourceIds));
+    const importedSourceIds = new Set(existing.flatMap((item) => item.sourceId ? [item.sourceId] : []));
+
+    return {
+        ...preview,
+        operations: preview.operations.map((operation) => ({
+            ...operation,
+            alreadyImported: importedSourceIds.has(operation.sourceId),
+        })),
     };
 }
 
@@ -167,16 +189,28 @@ function decodeXml(value: string) {
         .replace(/&amp;/g, '&');
 }
 
-function cellText(cellBody: string, cellType: string | undefined) {
+function parseSharedStrings(xml: string) {
+    return [...xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)].map((match) =>
+        [...match[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+            .map((text) => decodeXml(text[1].replace(/<[^>]+>/g, '')))
+            .join(''),
+    );
+}
+
+function cellText(cellBody: string, cellType: string | undefined, sharedStrings: string[]) {
     if (cellType === 'inlineStr') {
         const parts = [...cellBody.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((match) => decodeXml(match[1].replace(/<[^>]+>/g, '')));
         return parts.join('');
     }
     const value = cellBody.match(/<v>([\s\S]*?)<\/v>/)?.[1];
+    if (cellType === 's') {
+        const index = value === undefined ? -1 : Number(value);
+        return Number.isSafeInteger(index) ? sharedStrings[index] ?? '' : '';
+    }
     return value ? decodeXml(value) : '';
 }
 
-function parseSpreadsheetRows(worksheetXml: string): SpreadsheetRow[] {
+function parseSpreadsheetRows(worksheetXml: string, sharedStrings: string[] = []): SpreadsheetRow[] {
     const rows: SpreadsheetRow[] = [];
     const rowExpression = /<row\b([^>]*)>([\s\S]*?)<\/row>/g;
     let rowMatch: RegExpExecArray | null;
@@ -189,7 +223,7 @@ function parseSpreadsheetRows(worksheetXml: string): SpreadsheetRow[] {
         while ((cellMatch = cellExpression.exec(rowMatch[2]))) {
             const reference = cellMatch[1].match(/\br="([A-Z]+)\d+"/)?.[1];
             if (!reference) continue;
-            const value = cellText(cellMatch[2], cellMatch[1].match(/\bt="([^"]+)"/)?.[1]);
+            const value = cellText(cellMatch[2], cellMatch[1].match(/\bt="([^"]+)"/)?.[1], sharedStrings);
             if (value) cells.set(reference, value.trim());
         }
         if (cells.size) rows.push({ index: rowIndex, cells });
@@ -488,6 +522,160 @@ function parseXlsxCashOperations(rows: SpreadsheetRow[], warnings: string[]): Br
     return operations;
 }
 
+type SberHeaders = { headerRow: number; columns: Map<string, string> };
+
+function normalizeHeader(value: string) {
+    return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU');
+}
+
+function getSberHeaders(rows: SpreadsheetRow[], required: string[]): SberHeaders | null {
+    const requiredHeaders = required.map(normalizeHeader);
+    for (const row of rows) {
+        const columns = new Map([...row.cells.entries()].map(([column, value]) => [normalizeHeader(value), column]));
+        if (requiredHeaders.every((header) => columns.has(header))) return { headerRow: row.index, columns };
+    }
+    return null;
+}
+
+function sberCell(row: SpreadsheetRow, headers: SberHeaders, header: string) {
+    const column = headers.columns.get(normalizeHeader(header));
+    return column ? rowText(row, column) : '';
+}
+
+function toSberIsoDate(value: string, label: string) {
+    const normalized = value.trim();
+    const iso = normalized.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (iso) return iso[1];
+    if (datePattern.test(normalized)) return toIsoDate(normalized);
+    // Excel stores Sber's date-time columns as serial numbers. The 1899-12-30
+    // epoch deliberately accounts for Excel's historical 1900 leap-year bug.
+    const serial = Number(normalized);
+    if (Number.isFinite(serial) && serial >= 20_000 && serial <= 100_000) {
+        return new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 86_400_000).toISOString().slice(0, 10);
+    }
+    throw new Error(`${label} не найдена`);
+}
+
+function parseSberTrades(rows: SpreadsheetRow[], warnings: string[]): BrokerReportOperation[] {
+    const headers = getSberHeaders(rows, [
+        'Номер заявки', 'Дата исполнения заявки', 'Код финансового инструмента', 'Операция', 'Количество', 'Цена', 'Валюта', 'Статус',
+    ]);
+    if (!headers) {
+        warnings.push('Лист «Заявки» Сбера не найден или имеет неизвестную структуру.');
+        return [];
+    }
+
+    const operations: BrokerReportOperation[] = [];
+    for (const row of rows) {
+        if (row.index <= headers.headerRow) continue;
+        const orderId = sberCell(row, headers, 'Номер заявки');
+        if (!orderId) continue;
+        const status = sberCell(row, headers, 'Статус');
+        if (!/^исполнен/i.test(status)) continue;
+
+        try {
+            const direction = sberCell(row, headers, 'Операция');
+            if (direction !== 'Покупка' && direction !== 'Продажа') throw new Error('направление сделки не найдено');
+            const ticker = normalizeSpreadsheetTicker(sberCell(row, headers, 'Код финансового инструмента'));
+            if (!tickerPattern.test(ticker)) throw new Error('тикер не найден');
+            if (sberCell(row, headers, 'Валюта').toUpperCase() !== 'RUB') throw new Error('поддерживаются только расчёты в рублях');
+
+            const quantity = parseSpreadsheetNumber(sberCell(row, headers, 'Количество'), 'количество');
+            if (!Number.isSafeInteger(quantity) || quantity < 1) throw new Error('количество должно быть целым и больше нуля');
+            const priceKopecks = spreadsheetMoneyToKopecks(sberCell(row, headers, 'Цена'), 'цена');
+            if (priceKopecks < 1) throw new Error('цена должна быть больше нуля');
+            const accruedInterestKopecks = spreadsheetMoneyToKopecks(sberCell(row, headers, 'НКД') || '0', 'НКД');
+            const commissionKopecks = spreadsheetMoneyToKopecks(sberCell(row, headers, 'Комиссия (банк+биржа)') || '0', 'комиссия');
+
+            operations.push({
+                type: direction === 'Покупка' ? 'BUY' : 'SELL',
+                ticker,
+                quantity,
+                priceKopecks,
+                amountKopecks: null,
+                accruedInterestKopecks,
+                commissionKopecks,
+                operationDate: toSberIsoDate(sberCell(row, headers, 'Дата исполнения заявки'), 'дата исполнения'),
+                // The application number stays the same in repeated Sber exports.
+                sourceId: `sber:order:${orderId}`,
+                description: `${direction}: ${ticker}`,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'неизвестная ошибка';
+            warnings.push(`Заявка Сбера №${orderId} не распознана: ${message}.`);
+        }
+    }
+    return operations;
+}
+
+function getSberCashType(action: string): ImportedCashType | ImportedIncomeType | null {
+    const normalized = action.toLocaleLowerCase('ru-RU');
+    if (normalized.includes('пополн')) return 'DEPOSIT';
+    if (normalized.includes('вывод')) return 'WITHDRAWAL';
+    if (normalized.includes('дивиденд')) return 'DIVIDEND';
+    if (normalized.includes('купон')) return 'COUPON';
+    if (normalized.includes('налог')) return 'TAX';
+    return null;
+}
+
+function parseSberCashOperations(rows: SpreadsheetRow[], warnings: string[]): BrokerReportOperation[] {
+    const headers = getSberHeaders(rows, [
+        'Дата исполнения поручения', 'Операция', 'Сумма', 'Валюта операции', 'Статус',
+    ]);
+    if (!headers) {
+        warnings.push('Лист «Движение ДС» Сбера не найден или имеет неизвестную структуру.');
+        return [];
+    }
+
+    const operations: BrokerReportOperation[] = [];
+    let skippedCommissions = 0;
+    for (const row of rows) {
+        if (row.index <= headers.headerRow) continue;
+        const action = sberCell(row, headers, 'Операция');
+        if (!action || !/^исполнен/i.test(sberCell(row, headers, 'Статус'))) continue;
+        if (action.toLocaleLowerCase('ru-RU').includes('комисси')) {
+            skippedCommissions += 1;
+            continue;
+        }
+        const type = getSberCashType(action);
+        if (!type) continue;
+
+        try {
+            if (sberCell(row, headers, 'Валюта операции').toUpperCase() !== 'RUB') throw new Error('поддерживаются только расчёты в рублях');
+            const operationDate = toSberIsoDate(sberCell(row, headers, 'Дата исполнения поручения'), 'дата операции');
+            const amountKopecks = spreadsheetMoneyToKopecks(sberCell(row, headers, 'Сумма'), 'сумма операции');
+            if (amountKopecks < 1) throw new Error('сумма операции должна быть больше нуля');
+            const tickerValue = sberCell(row, headers, 'Код финансового инструмента');
+            const ticker = type === 'DIVIDEND' || type === 'COUPON'
+                ? normalizeSpreadsheetTicker(tickerValue)
+                : null;
+            if ((type === 'DIVIDEND' || type === 'COUPON') && (!ticker || !tickerPattern.test(ticker))) {
+                throw new Error('для выплаты не указан тикер');
+            }
+            operations.push({
+                type,
+                ticker,
+                quantity: null,
+                priceKopecks: null,
+                amountKopecks,
+                accruedInterestKopecks: 0,
+                commissionKopecks: 0,
+                operationDate,
+                sourceId: `sber:cash:${row.index}:${operationDate}:${type}:${amountKopecks}:${ticker ?? 'cash'}`,
+                description: action,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'неизвестная ошибка';
+            warnings.push(`Денежная операция Сбера в строке ${row.index} не распознана: ${message}.`);
+        }
+    }
+
+    if (skippedCommissions) {
+        warnings.push(`Комиссии Сбера (${skippedCommissions}) не добавлены отдельными операциями: они уже учтены в исполненных заявках.`);
+    }
+    return operations;
+}
+
 export async function previewTbankBrokerXlsxReport(xlsxBase64: unknown): Promise<BrokerReportPreview> {
     if (typeof xlsxBase64 !== 'string' || !xlsxBase64.trim()) {
         throw new BrokerReportImportError('Загрузите Excel-файл отчёта.');
@@ -520,7 +708,58 @@ export async function previewTbankBrokerXlsxReport(xlsxBase64: unknown): Promise
     if (!operations.length) warnings.push('В отчёте не найдено операций для импорта.');
 
     const period = reportText.match(/Отчет о сделках и операциях за период\s*(\d{2}\.\d{2}\.\d{4}\s*-\s*\d{2}\.\d{2}\.\d{4})/i)?.[1] ?? null;
-    return createPreview('Excel', period, operations, warnings);
+    return markAlreadyImported(createPreview('Т-Банк', 'Excel', period, operations, warnings));
+}
+
+function formatReportPeriod(operations: BrokerReportOperation[]) {
+    const first = operations[0]?.operationDate;
+    const last = operations.at(-1)?.operationDate;
+    if (!first || !last) return null;
+    const format = (value: string) => {
+        const [year, month, day] = value.split('-');
+        return `${day}.${month}.${year}`;
+    };
+    return `${format(first)} — ${format(last)}`;
+}
+
+export async function previewSberBrokerXlsxReport(xlsxBase64: unknown): Promise<BrokerReportPreview> {
+    if (typeof xlsxBase64 !== 'string' || !xlsxBase64.trim()) {
+        throw new BrokerReportImportError('Загрузите Excel-файл отчёта Сбера.');
+    }
+
+    const buffer = Buffer.from(xlsxBase64, 'base64');
+    if (!buffer.length || buffer.length > MAX_REPORT_SIZE || !buffer.subarray(0, 4).equals(Buffer.from('PK\x03\x04'))) {
+        throw new BrokerReportImportError('Нужен Excel-файл .xlsx размером до 8 МБ.');
+    }
+
+    let ordersRows: SpreadsheetRow[];
+    let cashRows: SpreadsheetRow[];
+    try {
+        let sharedStrings: string[] = [];
+        try {
+            sharedStrings = parseSharedStrings(readZipEntry(buffer, 'xl/sharedStrings.xml').toString('utf8'));
+        } catch {
+            // Some spreadsheet writers use inline strings instead of a shared table.
+        }
+        ordersRows = parseSpreadsheetRows(readZipEntry(buffer, 'xl/worksheets/sheet1.xml').toString('utf8'), sharedStrings);
+        cashRows = parseSpreadsheetRows(readZipEntry(buffer, 'xl/worksheets/sheet3.xml').toString('utf8'), sharedStrings);
+    } catch {
+        throw new BrokerReportImportError('Не удалось прочитать листы «Заявки» и «Движение ДС» в Excel-отчёте Сбера.');
+    }
+
+    if (!getSberHeaders(ordersRows, ['Номер заявки', 'Код финансового инструмента'])
+        && !getSberHeaders(cashRows, ['Дата исполнения поручения', 'Операция', 'Сумма'])) {
+        throw new BrokerReportImportError('Сейчас поддерживается Excel-отчёт СберИнвестиций в формате примера.');
+    }
+
+    const warnings: string[] = [];
+    const operations = [
+        ...parseSberTrades(ordersRows, warnings),
+        ...parseSberCashOperations(cashRows, warnings),
+    ].sort((left, right) => left.operationDate.localeCompare(right.operationDate) || left.sourceId.localeCompare(right.sourceId));
+    if (!operations.length) warnings.push('В отчёте не найдено исполненных операций для импорта.');
+
+    return markAlreadyImported(createPreview('СберИнвестиции', 'Excel', formatReportPeriod(operations), operations, warnings));
 }
 
 export async function previewTbankBrokerReport(pdfBase64: unknown): Promise<BrokerReportPreview> {
@@ -555,10 +794,14 @@ export async function previewTbankBrokerReport(pdfBase64: unknown): Promise<Brok
     if (!operations.length) warnings.push('В отчёте не найдено операций для импорта.');
 
     const period = text.match(/Отчет о сделках и операциях за период\s+(\d{2}\.\d{2}\.\d{4}\s*-\s*\d{2}\.\d{2}\.\d{4})/)?.[1] ?? null;
-    return createPreview('PDF', period, operations, warnings);
+    return markAlreadyImported(createPreview('Т-Банк', 'PDF', period, operations, warnings));
 }
 
-async function getImportedTransactionInputs(portfolioId: number, operations: BrokerReportOperation[]) {
+async function getImportedTransactionInputs(
+    portfolioId: number,
+    operations: BrokerReportOperation[],
+    broker: BrokerReportName,
+) {
     const tickers = [...new Set(operations.flatMap((operation) => operation.ticker ? [operation.ticker] : []))];
     const importedInstruments = await Promise.allSettled(tickers.map((ticker) => addInstrument(ticker)));
     const unavailableTickers = importedInstruments.flatMap((result, index) =>
@@ -586,7 +829,7 @@ async function getImportedTransactionInputs(portfolioId: number, operations: Bro
         accruedInterestKopecks: operation.accruedInterestKopecks,
         commissionKopecks: operation.commissionKopecks,
         operationDate: operation.operationDate,
-        comment: `Импорт Т-Банк: ${operation.description}`,
+        comment: `Импорт ${broker}: ${operation.description}`,
         sourceId: operation.sourceId,
     }));
 }
@@ -651,11 +894,17 @@ async function importBrokerPreview(
         .select({ sourceId: transactions.sourceId })
         .from(transactions)
         .where(inArray(transactions.sourceId, sourceIds));
-    if (existingSources.length) {
-        throw new BrokerReportImportError('Среди выбранных операций есть уже импортированные. Снимите отметку с них и попробуйте снова.');
+    const existingSourceIds = new Set(existingSources.flatMap((item) => item.sourceId ? [item.sourceId] : []));
+    const newOperations = selectedOperations.filter((operation) => !existingSourceIds.has(operation.sourceId));
+    if (!newOperations.length) {
+        return {
+            imported: 0,
+            selectedSourceIds: [],
+            skippedAlreadyImported: selectedOperations.length,
+        };
     }
 
-    const inputs = await getImportedTransactionInputs(portfolioId, selectedOperations);
+    const inputs = await getImportedTransactionInputs(portfolioId, newOperations, preview.broker);
     const allInstruments = await db.select({ id: instruments.id, ticker: instruments.ticker, name: instruments.name }).from(instruments);
     const instrumentById = new Map(allInstruments.map((instrument) => [instrument.id, instrument]));
     const existingTransactions = await listTransactions(portfolioId);
@@ -673,7 +922,8 @@ async function importBrokerPreview(
 
     return {
         imported: imported.length,
-        selectedSourceIds: sourceIds,
+        selectedSourceIds: newOperations.map((operation) => operation.sourceId),
+        skippedAlreadyImported: selectedOperations.length - newOperations.length,
     };
 }
 
@@ -691,4 +941,12 @@ export async function importTbankBrokerXlsxReport(
     selectedSourceIds: unknown,
 ) {
     return importBrokerPreview(portfolioId, await previewTbankBrokerXlsxReport(xlsxBase64), selectedSourceIds);
+}
+
+export async function importSberBrokerXlsxReport(
+    portfolioId: number,
+    xlsxBase64: unknown,
+    selectedSourceIds: unknown,
+) {
+    return importBrokerPreview(portfolioId, await previewSberBrokerXlsxReport(xlsxBase64), selectedSourceIds);
 }

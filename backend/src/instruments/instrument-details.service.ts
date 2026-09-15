@@ -302,6 +302,19 @@ async function getSmartLabFundamentals(ticker: string): Promise<SmartLabFundamen
     }
 }
 
+/**
+ * The portfolio forecast uses only the latest published annual dividend as an
+ * estimate. It deliberately does not invent an ex-dividend date or treat this
+ * historical value as an announced payment.
+ */
+export async function getInstrumentDividendEstimate(ticker: string) {
+    const fundamentals = await getSmartLabFundamentals(ticker);
+    return {
+        dividendPerShareRub: fundamentals?.dividendPerShareRub ?? null,
+        source: fundamentals ? 'Smart-Lab' : null,
+    };
+}
+
 function unavailableQuote(instrument: { ticker: string; currency: string }) {
     return {
         ticker: instrument.ticker,

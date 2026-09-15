@@ -251,6 +251,7 @@ async function buildPortfolioPerformance(portfolioId?: number) {
     const fallbackPrices = new Map<number, number>();
     const series: ValuationPoint[] = [];
     let cashKopecks = 0;
+    let netContributionsKopecks = 0;
     let latestPositionValues = new Map<number, number>();
 
     for (const day of days) {
@@ -267,6 +268,7 @@ async function buildPortfolioPerformance(portfolioId?: number) {
             const changes = applyTransaction(transaction, holdings);
             cashKopecks += changes.cashChange;
             externalFlowKopecks += changes.externalFlow;
+            netContributionsKopecks += changes.externalFlow;
             if (transaction.type === 'BUY' && transaction.instrumentId && transaction.priceKopecks) fallbackPrices.set(transaction.instrumentId, transaction.priceKopecks);
         }
         latestPositionValues = new Map();
@@ -276,7 +278,16 @@ async function buildPortfolioPerformance(portfolioId?: number) {
             if (priceKopecks !== undefined) latestPositionValues.set(instrumentId, priceKopecks * quantity);
         }
         const securitiesValueKopecks = [...latestPositionValues.values()].reduce((sum, value) => sum + value, 0);
-        series.push({ date: day, valueKopecks: cashKopecks + securitiesValueKopecks, externalFlowKopecks });
+        const valueKopecks = cashKopecks + securitiesValueKopecks;
+        series.push({
+            date: day,
+            valueKopecks,
+            externalFlowKopecks,
+            // This is the result after removing only external deposits and
+            // withdrawals. It therefore includes revaluation, realised P/L,
+            // coupons, dividends, commissions and taxes.
+            profitKopecks: valueKopecks - netContributionsKopecks,
+        });
     }
 
     const latest = series.at(-1);

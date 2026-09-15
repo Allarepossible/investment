@@ -5,7 +5,7 @@ export type PortfolioPerformance = {
   portfolioId: number | null;
   generatedAt: string;
   period: { from: string; to: string; tradingDays: number } | null;
-  series: Array<{ date: string; valueKopecks: number; externalFlowKopecks: number }>;
+  series: Array<{ date: string; valueKopecks: number; externalFlowKopecks: number; profitKopecks?: number }>;
   benchmark: { ticker: string; name: string; returnPercent: number | null };
   performance: {
     timeWeightedReturnPercent: number | null;
@@ -35,6 +35,30 @@ export type PortfolioPerformance = {
   coverage: { pricedInstruments: number; totalInstruments: number; missingTickers: string[] };
 };
 
+export type PortfolioIncomeForecast = {
+  scope: 'aggregate' | 'portfolio';
+  portfolioId: number | null;
+  generatedAt: string;
+  horizon: { from: string; to: string; days: number };
+  totalKopecks: number;
+  couponKopecks: number;
+  dividendKopecks: number;
+  nextPayment: IncomeForecastPayment | null;
+  payments: IncomeForecastPayment[];
+  coverage: { openPositions: number; bondPositions: number; sharePositions: number; positionsWithPayments: number };
+};
+
+type IncomeForecastPayment = {
+  instrumentId: number;
+  ticker: string;
+  name: string;
+  kind: 'coupon' | 'dividend';
+  date: string | null;
+  amountKopecks: number;
+  status: 'moex-date' | 'estimated';
+  note: string;
+};
+
 type Portfolio = { id: number; name: string };
 
 const money = (kopecks: number | null) => kopecks === null
@@ -46,7 +70,19 @@ const percent = (value: number | null, sign = false) => value === null
 const number = (value: number | null) => value === null ? '—' : value.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
 const date = (value: string) => new Date(`${value}T12:00:00`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
 
-function ValueChart({ points }: { points: PortfolioPerformance['series'] }) {
+function ValueChart({
+  points,
+  ariaLabel = 'График изменения стоимости портфеля',
+  valueLabel = 'Стоимость',
+  flowLabel = 'Поток',
+  gradientId = 'portfolio-value-fill',
+}: {
+  points: PortfolioPerformance['series'];
+  ariaLabel?: string;
+  valueLabel?: string;
+  flowLabel?: string;
+  gradientId?: string;
+}) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   if (points.length < 2) return <p className="analytics-chart-empty">Для графика нужны котировки хотя бы за два дня.</p>;
@@ -86,12 +122,12 @@ function ValueChart({ points }: { points: PortfolioPerformance['series'] }) {
     setActiveIndex(Math.max(0, Math.min(points.length - 1, Math.round(ratio * (points.length - 1)))));
   };
 
-  return <div className="analytics-value-chart" role="img" aria-label="График изменения стоимости портфеля">
+  return <div className="analytics-value-chart" role="img" aria-label={ariaLabel}>
     <div className="analytics-chart-scale"><span>{money(maximum)}</span><span>{money(minimum)}</span></div>
     <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true" onPointerMove={selectClosestPoint} onPointerDown={selectClosestPoint} onPointerLeave={() => setActiveIndex(null)}>
-      <defs><linearGradient id="portfolio-value-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#3a8dff" stopOpacity=".34" /><stop offset="1" stopColor="#3a8dff" stopOpacity="0" /></linearGradient></defs>
+      <defs><linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#3a8dff" stopOpacity=".34" /><stop offset="1" stopColor="#3a8dff" stopOpacity="0" /></linearGradient></defs>
       {[0.2, 0.5, 0.8].map((point) => <line key={point} x1={padding.left} x2={width - padding.right} y1={padding.top + (height - padding.top - padding.bottom) * point} y2={padding.top + (height - padding.top - padding.bottom) * point} />)}
-      <path d={area} className="analytics-area" />
+      <path d={area} className="analytics-area" style={{ fill: `url(#${gradientId})` }} />
       <path d={line} className="analytics-line" />
       {labelIndexes.map((index) => <g key={index}><circle cx={x(index)} cy={y(points[index].valueKopecks)} r="3.5" /><text x={x(index)} y={height - 7} textAnchor={index === 0 ? 'start' : index === points.length - 1 ? 'end' : 'middle'}>{date(points[index].date)}</text></g>)}
       {activePoint !== null && activeX !== null && activeY !== null && <g className="analytics-hover-tooltip" pointerEvents="none">
@@ -99,13 +135,34 @@ function ValueChart({ points }: { points: PortfolioPerformance['series'] }) {
         <circle className="analytics-hover-point" cx={activeX} cy={activeY} r="5" />
         <rect className="analytics-hover-tooltip-box" x={tooltipX} y={tooltipY} width={tooltipWidth} height={tooltipHeight} rx="8" />
         <text className="analytics-hover-tooltip-date" x={tooltipX + 11} y={tooltipY + 17}>{date(activePoint.date)}</text>
-        <text className="analytics-hover-tooltip-label" x={tooltipX + 11} y={tooltipY + 36}>Стоимость</text>
+        <text className="analytics-hover-tooltip-label" x={tooltipX + 11} y={tooltipY + 36}>{valueLabel}</text>
         <text className="analytics-hover-tooltip-value" x={tooltipX + tooltipWidth - 11} y={tooltipY + 36} textAnchor="end">{money(activePoint.valueKopecks)}</text>
-        <text className="analytics-hover-tooltip-label" x={tooltipX + 11} y={tooltipY + 55}>Поток</text>
+        <text className="analytics-hover-tooltip-label" x={tooltipX + 11} y={tooltipY + 55}>{flowLabel}</text>
         <text className="analytics-hover-tooltip-flow" x={tooltipX + tooltipWidth - 11} y={tooltipY + 55} textAnchor="end">{cashFlow}</text>
       </g>}
     </svg>
   </div>;
+}
+
+function toProfitPoints(points: PortfolioPerformance['series']) {
+  let netContributionsKopecks = 0;
+  return points.map((point) => {
+    netContributionsKopecks += point.externalFlowKopecks;
+    return {
+      ...point,
+      valueKopecks: point.profitKopecks ?? point.valueKopecks - netContributionsKopecks,
+    };
+  });
+}
+
+function ProfitChart({ points }: { points: PortfolioPerformance['series'] }) {
+  return <ValueChart
+    points={toProfitPoints(points)}
+    ariaLabel="График накопленной прибыли портфеля"
+    valueLabel="Результат"
+    flowLabel="Вложения"
+    gradientId="portfolio-profit-fill"
+  />;
 }
 
 function InfoTip({ text }: { text: string }) {
@@ -116,30 +173,70 @@ function MetricCard({ label, value, hint, description, tone }: { label: string; 
   return <div className="analytics-metric"><div className="analytics-metric-label"><span>{label}</span><InfoTip text={description} /></div><strong className={tone}>{value}</strong><small>{hint}</small></div>;
 }
 
+function IncomeForecastPanel({
+  forecast,
+  isLoading,
+  error,
+}: {
+  forecast: PortfolioIncomeForecast | null;
+  isLoading: boolean;
+  error: string;
+}) {
+  if (isLoading && !forecast) return <section className="analytics-income-panel analytics-income-loading" aria-live="polite"><i /><div><strong>Собираем календарь выплат</strong><span>Проверяем ближайшие купоны на MOEX и последнюю опубликованную дивидендную выплату.</span></div></section>;
+  if (error && !forecast) return <section className="analytics-income-panel analytics-income-error" role="status"><strong>Календарь выплат пока недоступен</strong><span>{error}</span></section>;
+  if (!forecast) return null;
+
+  const nextPayment = forecast.nextPayment;
+  const visiblePayments = forecast.payments.slice(0, 12);
+  const nextPaymentLabel = nextPayment ? `${money(nextPayment.amountKopecks)} · ${nextPayment.date ? date(nextPayment.date) : '—'}` : 'Нет точной даты';
+
+  return <section className="analytics-income-panel">
+    <div className="analytics-section-heading"><div><p className="section-label">БУДУЩИЕ ВЫПЛАТЫ</p><h2>Что принесёт портфель <InfoTip text="Купоны рассчитаны для текущего количества облигаций. Ближайшая дата берётся из MOEX ISS, последующие даты строятся по текущему купонному периоду. Дивиденды — ориентир по последней опубликованной годовой выплате, без даты и без гарантии." /></h2></div><span>{isLoading ? 'Обновляем…' : `до ${date(forecast.horizon.to)}`}</span></div>
+    {forecast.payments.length ? <>
+      <div className="analytics-metric-grid analytics-income-metric-grid">
+        <MetricCard label="За 12 месяцев" value={money(forecast.totalKopecks)} hint="до удержания налогов" description="Сумма ожидаемых купонов и ориентировочных дивидендов за следующие 365 дней по текущим открытым позициям. Это не прогноз роста цены и не гарантированный доход." tone="positive" />
+        <MetricCard label="Ближайший купон" value={nextPaymentLabel} hint={nextPayment ? `${nextPayment.ticker} · ${nextPayment.name}` : 'MOEX не дал ближайшую дату'} description="Ближайшая выплата с датой из MOEX ISS. В расчёт включено количество бумаг, которое сейчас находится в выбранном портфеле." />
+        <MetricCard label="Купоны" value={money(forecast.couponKopecks)} hint={`${forecast.coverage.bondPositions} поз. в облигациях`} description="Плановые купонные выплаты по облигациям. Размер указан до НДФЛ; номинал при погашении сюда не включён." />
+        <MetricCard label="Дивиденды — оценка" value={money(forecast.dividendKopecks)} hint={`${forecast.coverage.sharePositions} поз. в акциях`} description="Ориентир по последней опубликованной годовой дивидендной выплате. Совет директоров и собрание акционеров могут изменить размер или отменить дивиденды." />
+      </div>
+      <div className="analytics-income-table"><table><thead><tr><th>Когда</th><th>Инструмент</th><th>Выплата</th><th>Вы получите</th><th>Статус</th></tr></thead><tbody>{visiblePayments.map((payment, index) => <tr key={`${payment.instrumentId}-${payment.kind}-${payment.date ?? 'estimate'}-${index}`}><td>{payment.date ? date(payment.date) : 'За 12 мес.'}</td><td><strong>{payment.ticker}</strong><span>{payment.name}</span></td><td>{payment.kind === 'coupon' ? 'Купон' : 'Дивиденды'}</td><td><b>{money(payment.amountKopecks)}</b></td><td><span className={`income-payment-status ${payment.status}`}>{payment.status === 'moex-date' ? 'MOEX' : 'Оценка'}</span><small>{payment.note}</small></td></tr>)}</tbody></table>{forecast.payments.length > visiblePayments.length && <p>Показаны ближайшие {visiblePayments.length} выплат из {forecast.payments.length}.</p>}</div>
+    </> : <div className="analytics-income-empty"><strong>Пока нет выплат для расчёта</strong><span>Для облигаций нужна дата и размер купона из MOEX; для акций — последняя опубликованная дивидендная выплата.</span></div>}
+    {error && <p className="analytics-income-stale">Показываем сохранённый расчёт: {error}</p>}
+    <p className="analytics-disclaimer">Расчёт ведётся по текущему количеству бумаг и до удержания налогов. Дивиденды и будущие купоны могут быть изменены эмитентом.</p>
+  </section>;
+}
+
 function AllocationList({ title, description, items }: { title: string; description: string; items: Array<{ name: string; allocationPercent: number }> }) {
   return <section className="allocation-list"><h3>{title}<InfoTip text={description} /></h3>{items.length ? <div>{items.map((item) => <div className="allocation-row" key={item.name}><div><span>{item.name}</span><b>{percent(item.allocationPercent)}</b></div><i><i style={{ width: `${Math.min(item.allocationPercent, 100)}%` }} /></i></div>)}</div> : <p>Недостаточно данных для структуры.</p>}</section>;
 }
 
 export function PortfolioAnalyticsPage({
   performance,
+  incomeForecast,
   portfolios,
   selectedPortfolioId,
   isLoading,
+  isIncomeForecastLoading,
   error,
+  incomeForecastError,
   onPortfolioChange,
   onRefresh,
 }: {
   performance: PortfolioPerformance | null;
+  incomeForecast: PortfolioIncomeForecast | null;
   portfolios: Portfolio[];
   selectedPortfolioId: number | null;
   isLoading: boolean;
+  isIncomeForecastLoading: boolean;
   error: string;
+  incomeForecastError: string;
   onPortfolioChange: (portfolioId: number | null) => void;
   onRefresh: () => void;
 }) {
   const period = performance?.period;
   const hasPeriod = Boolean(period && performance);
   const returnTone = (value: number | null) => value !== null && value < 0 ? 'negative' : value !== null && value > 0 ? 'positive' : undefined;
+  const currentProfitKopecks = performance?.series.at(-1)?.profitKopecks ?? null;
 
   return <section className="analytics-page">
     <div className="analytics-toolbar">
@@ -156,6 +253,9 @@ export function PortfolioAnalyticsPage({
       <section className="analytics-performance-panel">
         <div className="analytics-section-heading"><div><p className="section-label">ФАЗА 5 · ДОХОДНОСТЬ</p><h2>Динамика стоимости <InfoTip text="История показывает стоимость портфеля на закрытие торговых дней. Внешние пополнения и выводы отражены в сумме, но отдельно учитываются при расчёте доходности." /></h2></div><div className="analytics-close-value"><strong>{money(performance.performance.currentValueKopecks)}</strong><span>на закрытие {date(period!.to)}</span></div></div>
         <ValueChart points={performance.series} />
+        <div className="analytics-subchart-heading"><div><p className="section-label">ФИНАНСОВЫЙ РЕЗУЛЬТАТ</p><h3>Динамика прибыли портфеля <InfoTip text="Это накопленный результат после исключения только пополнений и выводов. Он включает изменение цены бумаг, реализованный результат, дивиденды, купоны, комиссии и налоги." /></h3></div><strong className={currentProfitKopecks !== null && currentProfitKopecks < 0 ? 'negative' : 'positive'}>{money(currentProfitKopecks)}</strong></div>
+        <ProfitChart points={performance.series} />
+        <p className="analytics-profit-note">Прибыль не учитывает пополнения и выводы, но учитывает переоценку активов, выплаты, комиссии и налоги.</p>
         <div className="analytics-metric-grid">
           <MetricCard label="Доходность TWR" value={percent(performance.performance.timeWeightedReturnPercent, true)} hint="исключает пополнения и выводы" description="Доходность стратегии без влияния того, когда и на какую сумму пополнялся или выводился счёт. Удобна для сравнения качества инвестирования." tone={returnTone(performance.performance.timeWeightedReturnPercent)} />
           <MetricCard label="Доходность XIRR" value={percent(performance.performance.moneyWeightedReturnPercent, true)} hint="годовая, учитывает даты денег" description="Ваша годовая доходность с учётом точных сумм и дат пополнений, выводов и итоговой стоимости портфеля." tone={returnTone(performance.performance.moneyWeightedReturnPercent)} />
@@ -163,6 +263,8 @@ export function PortfolioAnalyticsPage({
           <MetricCard label="Индекс IMOEX" value={percent(performance.benchmark.returnPercent, true)} hint={`за тот же период · ${performance.benchmark.name}`} description="Изменение Индекса Мосбиржи за тот же период. Это ориентир для сравнения вашего результата с широким российским рынком." tone={returnTone(performance.benchmark.returnPercent)} />
         </div>
       </section>
+
+      <IncomeForecastPanel forecast={incomeForecast} isLoading={isIncomeForecastLoading} error={incomeForecastError} />
 
       <section className="analytics-risk-panel">
         <div className="analytics-section-heading"><div><p className="section-label">ФАЗА 6 · РИСК</p><h2>Профиль риска <InfoTip text="Все показатели риска построены по изменениям стоимости портфеля между днями и не являются прогнозом будущих потерь." /></h2></div><span>На основе {performance.risk.observations} дневных доходностей</span></div>
