@@ -23,6 +23,7 @@ import {
 } from './instruments/instrument-details.service';
 import { applyMigrations } from './db';
 import { getBondAnalytics, getPortfolioAnalytics } from './analytics/analytics.service';
+import { getPortfolioComparison } from './analytics/portfolio-comparison.service';
 import { getPortfolioIncomeForecast, invalidatePortfolioIncomeForecast } from './analytics/income-forecast.service';
 import { getPortfolioPerformance, invalidatePortfolioPerformance } from './analytics/portfolio-performance.service';
 import {
@@ -198,6 +199,14 @@ app.get('/api/portfolios/aggregate', async (_req, res, next) => {
 app.get('/api/analytics', async (_req, res, next) => {
     try {
         res.json(await getPortfolioAnalytics());
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get('/api/analytics/comparison', async (_req, res, next) => {
+    try {
+        res.json(await getPortfolioComparison());
     } catch (error) {
         next(error);
     }

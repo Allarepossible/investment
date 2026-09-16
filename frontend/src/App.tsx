@@ -3,6 +3,7 @@ import type { ChangeEvent, FormEvent } from 'react';
 import './App.css';
 import { InstrumentFinancialChart, InstrumentPriceChart } from './components/InstrumentCharts';
 import { PortfolioAnalyticsPage, type PortfolioIncomeForecast, type PortfolioPerformance } from './components/PortfolioAnalytics';
+import { PortfolioComparisonPage, type PortfolioComparison } from './components/PortfolioComparison';
 import { PortfolioCharts } from './components/PortfolioCharts';
 
 type Instrument = { id: number; ticker: string; name: string; isin: string | null; type: string; board: string | null; market: string | null; currency: string; lotSize: number | null; minPriceStep: number | null; logoPath: string | null; logoStatus: 'pending' | 'found' | 'missing' };
@@ -16,7 +17,7 @@ type BrokerName = 'tbank' | 'sber';
 type BrokerImportPreview = { broker: 'Т-Банк' | 'СберИнвестиции'; format: 'PDF' | 'Excel'; period: string | null; operations: BrokerImportOperation[]; warnings: string[]; summary: { trades: number; deposits: number; withdrawals: number; commissionsKopecks: number } };
 type Analytics = { cashKopecks: number; securitiesValueKopecks: number; totalValueKopecks: number; netContributionsKopecks: number; totalPnlKopecks: number; positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; averageCostKopecks: number; marketValueKopecks: number | null; unrealizedPnlKopecks: number | null; allocationPercent: number | null }> };
 type BondAnalytics = { positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; investedKopecks: number; pricePercent: number | null; nextCouponDate: string | null; nextCouponKopecks: number | null; offerDate: string | null; maturityDate: string | null; creditRating: string | null; currentYieldPercent: number | null; yieldToMaturityPercent: number | null }> };
-type Page = 'overview' | 'portfolios' | 'operations' | 'instruments' | 'analytics' | 'instrument';
+type Page = 'overview' | 'portfolios' | 'operations' | 'instruments' | 'analytics' | 'comparison' | 'instrument';
 type OverviewTab = 'profit' | 'bonds' | 'assets';
 type InstrumentSortKey = 'instrument' | 'type' | 'sector' | 'price' | 'pe' | 'ps' | 'payout' | 'marketCap' | 'parameters';
 type SortDirection = 'asc' | 'desc';
@@ -68,8 +69,8 @@ const priceRub = (value: number | null) => value === null ? '—' : `${value.toL
 const toKopecks = (value: string) => Math.round(Number(value.replace(/\s/g, '').replace(',', '.')) * 100);
 const tradeTypes = new Set(['BUY', 'SELL']);
 const instrumentTypes = new Set(['BUY', 'SELL', 'DIVIDEND', 'COUPON']);
-const pageTitles: Record<Page, string> = { overview: 'Обзор', portfolios: 'Портфели', operations: 'Операции', instruments: 'Инструменты', analytics: 'Аналитика', instrument: 'Инструмент' };
-const navigationPages: Page[] = ['overview', 'portfolios', 'operations', 'analytics', 'instruments'];
+const pageTitles: Record<Page, string> = { overview: 'Обзор', portfolios: 'Портфели', operations: 'Операции', instruments: 'Инструменты', analytics: 'Аналитика', comparison: 'Сравнение', instrument: 'Инструмент' };
+const navigationPages: Page[] = ['overview', 'portfolios', 'comparison', 'operations', 'analytics', 'instruments'];
 const historyRangeOptions: Array<{ value: HistoryRange; label: string }> = [
   { value: 'all', label: 'Всё время' }, { value: '5y', label: '5 лет' }, { value: '1y', label: 'Год' },
   { value: '1m', label: 'Месяц' }, { value: '1w', label: 'Неделя' }, { value: '1d', label: 'День' },
@@ -225,6 +226,9 @@ function App() {
   const [incomeForecast, setIncomeForecast] = useState<PortfolioIncomeForecast | null>(null);
   const [isIncomeForecastLoading, setIsIncomeForecastLoading] = useState(false);
   const [incomeForecastError, setIncomeForecastError] = useState('');
+  const [portfolioComparison, setPortfolioComparison] = useState<PortfolioComparison | null>(null);
+  const [isPortfolioComparisonLoading, setIsPortfolioComparisonLoading] = useState(false);
+  const [portfolioComparisonError, setPortfolioComparisonError] = useState('');
   const [overviewTab, setOverviewTab] = useState<OverviewTab>('profit');
   const [transactionType, setTransactionType] = useState('DEPOSIT');
   const [transactionInstrumentId, setTransactionInstrumentId] = useState('');
@@ -429,6 +433,21 @@ function App() {
     }
   }, [apiFetch]);
 
+  const loadPortfolioComparison = useCallback(async () => {
+    setIsPortfolioComparisonLoading(true);
+    setPortfolioComparisonError('');
+    try {
+      const response = await apiFetch('/analytics/comparison', undefined, 30_000);
+      const data = await response.json() as PortfolioComparison | { error?: string };
+      if (!response.ok) throw new Error('error' in data ? data.error : 'Не удалось сравнить портфели.');
+      setPortfolioComparison(data as PortfolioComparison);
+    } catch (error) {
+      setPortfolioComparisonError(error instanceof Error ? error.message : 'Не удалось сравнить портфели.');
+    } finally {
+      setIsPortfolioComparisonLoading(false);
+    }
+  }, [apiFetch]);
+
   useEffect(() => {
     const timeout = window.setTimeout(() => void loadActivity(selectedPortfolioId), 0);
     return () => window.clearTimeout(timeout);
@@ -448,6 +467,12 @@ function App() {
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [activePage, loadIncomeForecast, loadPortfolioPerformance, selectedPortfolioId]);
+
+  useEffect(() => {
+    if (activePage !== 'comparison') return;
+    const timeout = window.setTimeout(() => void loadPortfolioComparison(), 0);
+    return () => window.clearTimeout(timeout);
+  }, [activePage, loadPortfolioComparison]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -849,7 +874,7 @@ function App() {
     <nav className="top-navigation" aria-label="Основная навигация"><a className="top-brand" href="#overview" onClick={() => setActivePage('overview')}><span>●</span> Капитал</a><div className="nav-links">{navigationPages.map((page) => <a key={page} className={activePage === page || (page === 'instruments' && activePage === 'instrument') ? 'active' : ''} href={`#${page}`} onClick={() => setActivePage(page)}>{pageTitles[page]}{page === 'portfolios' && <small>{portfolios.length}</small>}</a>)}</div><div className="profile">АБ</div></nav>
     <main className="app" id="top">
       <div className="topbar"><span className="crumb">Инвестиции <b>/</b> {activePage === 'instrument' && selectedInstrumentTicker ? `Инструменты / ${selectedInstrumentTicker}` : pageTitles[activePage]}</span>{isBackendLoading && <span className="backend-loading" role="status" aria-live="polite"><i />Загружаем данные…</span>}</div>
-      {activePage !== 'instrument' && <header className="page-intro"><p className="eyebrow">{activePage === 'overview' ? 'ОБЩИЙ ПРОФИЛЬ' : activePage === 'portfolios' ? 'УПРАВЛЕНИЕ СТРАТЕГИЯМИ' : activePage === 'operations' ? 'УЧЁТ И АНАЛИТИКА' : activePage === 'analytics' ? 'ДОХОДНОСТЬ И РИСК' : 'КАТАЛОГ РЫНКА'}</p><h1>{activePage === 'overview' ? 'Обзор портфеля' : activePage === 'portfolios' ? 'Мои портфели' : activePage === 'operations' ? 'Операции' : activePage === 'analytics' ? 'Аналитика портфеля' : 'Инструменты'}</h1><p className="intro">{activePage === 'overview' ? 'Главные показатели по всем вашим инвестициям в одном месте.' : activePage === 'portfolios' ? 'Создавайте отдельные стратегии и управляйте ими независимо.' : activePage === 'operations' ? 'Добавляйте сделки, пополнения и выплаты — показатели пересчитаются автоматически.' : activePage === 'analytics' ? 'Смотрите историческую доходность, структуру и риски по всем портфелям или по отдельности.' : 'Находите бумаги Московской биржи и собирайте базу для своего портфеля.'}</p></header>}
+      {activePage !== 'instrument' && <header className="page-intro"><p className="eyebrow">{activePage === 'overview' ? 'ОБЩИЙ ПРОФИЛЬ' : activePage === 'portfolios' ? 'УПРАВЛЕНИЕ СТРАТЕГИЯМИ' : activePage === 'comparison' ? 'СРАВНЕНИЕ СТРАТЕГИЙ' : activePage === 'operations' ? 'УЧЁТ И АНАЛИТИКА' : activePage === 'analytics' ? 'ДОХОДНОСТЬ И РИСК' : 'КАТАЛОГ РЫНКА'}</p><h1>{activePage === 'overview' ? 'Обзор портфеля' : activePage === 'portfolios' ? 'Мои портфели' : activePage === 'comparison' ? 'Сравнение портфелей' : activePage === 'operations' ? 'Операции' : activePage === 'analytics' ? 'Аналитика портфеля' : 'Инструменты'}</h1><p className="intro">{activePage === 'overview' ? 'Главные показатели по всем вашим инвестициям в одном месте.' : activePage === 'portfolios' ? 'Создавайте отдельные стратегии и управляйте ими независимо.' : activePage === 'comparison' ? 'Смотрите, как разные стратегии отличаются по результату и структуре активов.' : activePage === 'operations' ? 'Добавляйте сделки, пополнения и выплаты — показатели пересчитаются автоматически.' : activePage === 'analytics' ? 'Смотрите историческую доходность, структуру и риски по всем портфелям или по отдельности.' : 'Находите бумаги Московской биржи и собирайте базу для своего портфеля.'}</p></header>}
       {activePage === 'instrument' && <InstrumentDetailPage detail={instrumentDetails} growth={instrumentGrowth} history={instrumentHistory} historyRange={historyRange} isHistoryLoading={isInstrumentHistoryLoading} historyError={instrumentHistoryError} error={instrumentDetailError} onRangeChange={setHistoryRange} onBack={closeInstrumentDetails} />}
       {activePage === 'overview' && <section className="overview-panel">
         <div className="activity-header"><div><p className="section-label">СВОДКА</p><h2>Состояние портфеля</h2></div><select value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} aria-label="Выберите портфель"><option value="">Все портфели</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></div>
@@ -859,6 +884,7 @@ function App() {
         {overviewTab === 'assets' && <div className="positions overview-positions"><h3>Мои активы</h3>{analytics?.positions.length ? analytics.positions.map((position) => <div className="position-row" key={position.instrumentId}><div><strong>{position.ticker}</strong><span>{position.name} · {position.quantity} шт.</span></div><div><strong>{position.marketValueKopecks === null ? 'Нет цены' : money(position.marketValueKopecks)}</strong><span>{position.allocationPercent ?? 0}% портфеля</span></div></div>) : <p className="portfolio-empty">Добавьте операции, чтобы увидеть структуру портфеля.</p>}</div>}
       </section>}
         {activePage === 'analytics' && <PortfolioAnalyticsPage performance={portfolioPerformance} incomeForecast={incomeForecast} portfolios={portfolios} selectedPortfolioId={selectedPortfolioId} isLoading={isPerformanceLoading} isIncomeForecastLoading={isIncomeForecastLoading} error={performanceError} incomeForecastError={incomeForecastError} onPortfolioChange={setSelectedPortfolioId} onRefresh={() => { void loadPortfolioPerformance(selectedPortfolioId, true); void loadIncomeForecast(selectedPortfolioId, true); }} />}
+      {activePage === 'comparison' && <PortfolioComparisonPage comparison={portfolioComparison} isLoading={isPortfolioComparisonLoading} error={portfolioComparisonError} onRefresh={() => void loadPortfolioComparison()} onOpenPortfolio={(portfolioId) => { setSelectedPortfolioId(portfolioId); setActivePage('overview'); window.location.hash = '#overview'; }} />}
       {activePage === 'portfolios' && <section className="portfolio-area" id="portfolio"><div className="portfolio-summary"><p className="section-label">ОБЩИЙ ПРОФИЛЬ</p><strong>{portfolios.length}</strong><span>{portfolios.length === 1 ? 'портфель' : portfolios.length > 1 && portfolios.length < 5 ? 'портфеля' : 'портфелей'}</span><p>Операции объединяются в общий инвестиционный профиль.</p></div><div className="portfolio-manager"><div><p className="section-label">ПОРТФЕЛИ</p><h2>Мои стратегии</h2></div><form onSubmit={savePortfolio}><label htmlFor="portfolio-name">Название портфеля</label><input id="portfolio-name" value={portfolioName} onChange={(event) => setPortfolioName(event.target.value)} placeholder="Например, Долгосрочный" maxLength={100} /><button>{editingPortfolioId ? 'Сохранить' : 'Создать'}</button>{editingPortfolioId && <button className="cancel-button" type="button" onClick={() => { setEditingPortfolioId(null); setPortfolioName(''); }}>Отмена</button>}</form>{portfolioMessage && <p className="portfolio-message" role="status">{portfolioMessage}</p>}<div className="portfolio-list">{portfolios.map((portfolio) => <div className="portfolio-row" key={portfolio.id}><span className="portfolio-dot" /><strong>{portfolio.name}</strong><button className="text-button" type="button" onClick={() => { setEditingPortfolioId(portfolio.id); setPortfolioName(portfolio.name); }}>Изменить</button><button className="text-button danger" type="button" onClick={() => void removePortfolio(portfolio.id)}>Удалить</button></div>)}{portfolios.length === 0 && <p className="portfolio-empty">Создайте первый портфель — например, «Долгосрочный» или «ИИС».</p>}</div></div></section>}
       {activePage === 'operations' && <section className="activity" id="activity"><div className="activity-header"><div><p className="section-label">ПОРТФЕЛЬНЫЙ УЧЁТ</p><h2>Операции и позиции</h2></div><select value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} aria-label="Выберите портфель"><option value="">Все портфели</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select></div>
         <div className="metric-grid"><div><span>Стоимость</span><strong>{analytics ? money(analytics.totalValueKopecks) : '—'}</strong></div><div><span>Вложено</span><strong>{analytics ? money(analytics.netContributionsKopecks) : '—'}</strong></div><div><span>Результат</span><strong className={analytics && analytics.totalPnlKopecks < 0 ? 'negative' : 'positive'}>{analytics ? money(analytics.totalPnlKopecks) : '—'}</strong></div><div><span>Свободные деньги</span><strong>{analytics ? money(analytics.cashKopecks) : '—'}</strong></div></div>

@@ -2,6 +2,7 @@ import { inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { instruments } from '../db/schema';
 import { MoexClient } from '../integrations/moex/moex.client';
+import { getInstrumentPrice } from '../instruments/instrument.service';
 import { getPortfolio, listPortfolios } from '../portfolios/portfolio.service';
 import { listTransactions } from '../transactions/transaction.service';
 import {
@@ -9,6 +10,7 @@ import {
     calculateTimeWeightedReturn,
     calculateXirr,
     compactValuationPoints,
+    estimateBondAccruedInterest,
     type CashFlow,
     type PricePoint,
     type ValuationPoint,
@@ -66,16 +68,20 @@ function getAssetType(instrument: SavedInstrument) {
     return 'Прочее';
 }
 
+function isBond(instrument: Pick<SavedInstrument, 'market' | 'type'>) {
+    return instrument.market === 'bonds' || instrument.type.includes('bond');
+}
+
 function toPricePoints(response: MoexCandlesResponse, instrument: SavedInstrument): PricePoint[] {
     const candles = response.candles;
     if (!candles) return [];
-    const isBond = instrument.market === 'bonds' || instrument.type.includes('bond');
+    const bond = isBond(instrument);
 
     return candles.data.flatMap((row) => {
         const close = asNumber(getBlockValue(candles, row, 'close'));
         const begin = getBlockValue(candles, row, 'begin');
         if (close === null || typeof begin !== 'string') return [];
-        const rubPrice = isBond ? (close * 1_000) / 100 : close;
+        const rubPrice = bond ? (close * 1_000) / 100 : close;
         return [{ date: begin.slice(0, 10), close: rubPrice }];
     });
 }
@@ -222,19 +228,41 @@ async function buildPortfolioPerformance(portfolioId?: number) {
 
     const orderedTransactions = [...transactions].sort((left, right) => left.operationDate.getTime() - right.operationDate.getTime() || left.id - right.id);
     const from = toDay(orderedTransactions[0].operationDate);
+    const today = toDay(new Date());
     const instrumentIds = [...new Set(orderedTransactions.flatMap((transaction) => transaction.instrumentId ? [transaction.instrumentId] : []))];
     const savedInstruments = instrumentIds.length ? await db.select().from(instruments).where(inArray(instruments.id, instrumentIds)) : [];
     const instrumentsById = new Map(savedInstruments.map((instrument) => [instrument.id, instrument]));
     const histories = new Map<number, PricePoint[]>();
-    const historyResults = await Promise.all(savedInstruments.map(async (instrument) => {
-        try {
-            return [instrument.id, await getInstrumentPrices(instrument, from)] as const;
-        } catch {
-            return [instrument.id, [] as PricePoint[]] as const;
-        }
-    }));
-    historyResults.forEach(([id, points]) => histories.set(id, points));
-    const benchmarkPrices = await getBenchmarkPrices(from);
+    const [historyResults, benchmarkPrices, quoteResults] = await Promise.all([
+        Promise.all(savedInstruments.map(async (instrument) => {
+            try {
+                return [instrument.id, await getInstrumentPrices(instrument, from)] as const;
+            } catch {
+                return [instrument.id, [] as PricePoint[]] as const;
+            }
+        })),
+        getBenchmarkPrices(from),
+        Promise.all(savedInstruments.map(async (instrument) => {
+            try {
+                return [instrument.id, await getInstrumentPrice(instrument.ticker)] as const;
+            } catch {
+                return [instrument.id, null] as const;
+            }
+        })),
+    ]);
+    const quotesByInstrumentId = new Map(quoteResults);
+    historyResults.forEach(([id, points]) => {
+        const instrument = instrumentsById.get(id);
+        const faceValue = instrument && isBond(instrument)
+            ? quotesByInstrumentId.get(id)?.faceValue ?? 1_000
+            : 1_000;
+        // Candle prices for bonds are percentages of nominal. Keep the
+        // fallback in toPricePoints for legacy data, then scale it to the
+        // live outstanding nominal when the issue is amortising.
+        histories.set(id, instrument && isBond(instrument)
+            ? points.map((point) => ({ ...point, close: point.close * faceValue / 1_000 }))
+            : points);
+    });
 
     const transactionsByDay = new Map<string, typeof orderedTransactions>();
     for (const transaction of orderedTransactions) {
@@ -244,6 +272,7 @@ async function buildPortfolioPerformance(portfolioId?: number) {
     const days = [...new Set([
         ...transactionsByDay.keys(),
         ...[...histories.values()].flatMap((points) => points.map((point) => point.date)),
+        today,
     ])].sort();
     const priceIndexes = new Map<number, number>();
     const latestPrices = new Map<number, number>();
@@ -269,12 +298,33 @@ async function buildPortfolioPerformance(portfolioId?: number) {
             cashKopecks += changes.cashChange;
             externalFlowKopecks += changes.externalFlow;
             netContributionsKopecks += changes.externalFlow;
-            if (transaction.type === 'BUY' && transaction.instrumentId && transaction.priceKopecks) fallbackPrices.set(transaction.instrumentId, transaction.priceKopecks);
+            if (transaction.type === 'BUY' && transaction.instrumentId && transaction.priceKopecks) {
+                const quantity = transaction.quantity ?? 0;
+                const accruedPerInstrumentKopecks = quantity > 0 ? Math.round(transaction.accruedInterestKopecks / quantity) : 0;
+                fallbackPrices.set(transaction.instrumentId, transaction.priceKopecks + accruedPerInstrumentKopecks);
+            }
         }
         latestPositionValues = new Map();
         for (const [instrumentId, quantity] of holdings) {
             if (quantity <= 0) continue;
-            const priceKopecks = latestPrices.get(instrumentId) ?? fallbackPrices.get(instrumentId);
+            const instrument = instrumentsById.get(instrumentId);
+            const quote = quotesByInstrumentId.get(instrumentId);
+            const candlePriceKopecks = latestPrices.get(instrumentId);
+            const livePriceKopecks = day === today && quote?.price != null
+                ? Math.round(quote.price * 100)
+                : undefined;
+            const accruedInterestKopecks = instrument && isBond(instrument) && quote
+                ? Math.round(estimateBondAccruedInterest({
+                    day,
+                    asOfDay: today,
+                    accruedInterestRub: quote.accruedInterest,
+                    couponValueRub: quote.couponValue,
+                    couponPeriodDays: quote.couponPeriodDays,
+                    nextCouponDate: quote.nextCouponDate,
+                }) * 100)
+                : 0;
+            const priceKopecks = livePriceKopecks
+                ?? (candlePriceKopecks === undefined ? fallbackPrices.get(instrumentId) : candlePriceKopecks + accruedInterestKopecks);
             if (priceKopecks !== undefined) latestPositionValues.set(instrumentId, priceKopecks * quantity);
         }
         const securitiesValueKopecks = [...latestPositionValues.values()].reduce((sum, value) => sum + value, 0);

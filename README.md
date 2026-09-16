@@ -914,14 +914,14 @@ MOEX используется как источник рыночной инфо�
 
 ## Phase 7 — UI
 
-* [ ] Dashboard
-* [ ] Portfolio page
-* [ ] Instrument page
-* [ ] Transaction history
-* [ ] Charts
-* [ ] Analytics tables
-* [ ] Portfolio comparison
-* [ ] Responsive layout
+* [x] Dashboard
+* [x] Portfolio page
+* [x] Instrument page
+* [x] Transaction history
+* [x] Charts
+* [x] Analytics tables
+* [x] Portfolio comparison
+* [x] Responsive layout
 
 ---
 

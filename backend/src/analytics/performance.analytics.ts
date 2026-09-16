@@ -15,6 +15,15 @@ export type CashFlow = {
     amountKopecks: number;
 };
 
+export type BondAccruedInterestInput = {
+    day: string;
+    asOfDay: string;
+    accruedInterestRub: number | null;
+    couponValueRub: number | null;
+    couponPeriodDays: number | null;
+    nextCouponDate: string | null;
+};
+
 function round(value: number, digits = 2) {
     const multiplier = 10 ** digits;
     return Math.round(value * multiplier) / multiplier;
@@ -24,6 +33,40 @@ function daysBetween(left: string, right: string) {
     const start = new Date(`${left}T12:00:00Z`).getTime();
     const end = new Date(`${right}T12:00:00Z`).getTime();
     return (end - start) / 86_400_000;
+}
+
+function addDays(day: string, days: number) {
+    const date = new Date(`${day}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+}
+
+/**
+ * MOEX daily candles contain a bond's clean price, while a portfolio position
+ * is valued at the dirty price (clean price + НКД). ISS publishes the current
+ * НКД and coupon period, so for earlier candle days we reconstruct it linearly
+ * inside the coupon period. The current day always uses MOEX's exact НКД.
+ */
+export function estimateBondAccruedInterest(input: BondAccruedInterestInput) {
+    const {
+        day, asOfDay, accruedInterestRub, couponValueRub, couponPeriodDays, nextCouponDate,
+    } = input;
+    if (accruedInterestRub === null || accruedInterestRub < 0) return 0;
+    if (day === asOfDay) return accruedInterestRub;
+    if (!couponValueRub || couponValueRub <= 0 || !couponPeriodDays || couponPeriodDays < 1 || !nextCouponDate) {
+        return accruedInterestRub;
+    }
+
+    let nextCoupon = nextCouponDate;
+    while (nextCoupon <= day) nextCoupon = addDays(nextCoupon, couponPeriodDays);
+    let previousCoupon = addDays(nextCoupon, -couponPeriodDays);
+    while (day < previousCoupon) {
+        nextCoupon = previousCoupon;
+        previousCoupon = addDays(nextCoupon, -couponPeriodDays);
+    }
+
+    const elapsedDays = Math.max(0, Math.min(couponPeriodDays, daysBetween(previousCoupon, day)));
+    return round(couponValueRub * elapsedDays / couponPeriodDays);
 }
 
 function average(values: number[]) {

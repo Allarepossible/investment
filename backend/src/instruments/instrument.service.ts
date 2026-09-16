@@ -17,6 +17,13 @@ import type {
 import { ensureInstrumentLogo, syncInstrumentLogos } from './logo.service';
 
 const moex = new MoexClient();
+const PRICE_CACHE_TTL_MS = 30_000;
+
+type InstrumentPrice = Awaited<ReturnType<typeof getInstrumentPriceFromMoex>>;
+type CachedInstrumentPrice = { expiresAt: number; value: InstrumentPrice };
+
+const priceCache = new Map<string, CachedInstrumentPrice>();
+const priceRequestsInFlight = new Map<string, Promise<InstrumentPrice>>();
 
 export class InstrumentNotFoundError extends Error {}
 export class InstrumentInUseError extends Error {}
@@ -233,7 +240,7 @@ export async function searchMoexInstruments(query: string) {
     return results.slice(0, 20);
 }
 
-export async function getInstrumentPrice(ticker: string) {
+async function getInstrumentPriceFromMoex(ticker: string) {
     const instrument = await getInstrument(ticker);
 
     if (!instrument.board || !instrument.market) {
@@ -252,6 +259,29 @@ export async function getInstrumentPrice(ticker: string) {
         ticker: instrument.ticker,
         ...normalizeInstrumentPrice(mapMoexPrice(response, instrument.currency), instrument),
     };
+}
+
+/**
+ * A portfolio page requests the same quote from the overview, performance and
+ * income forecast at almost the same time. Coalescing those reads avoids
+ * multiplying requests to MOEX and keeps the local API responsive.
+ */
+export async function getInstrumentPrice(ticker: string) {
+    const key = normalizeTicker(ticker);
+    const cached = priceCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    const running = priceRequestsInFlight.get(key);
+    if (running) return running;
+
+    const request = getInstrumentPriceFromMoex(key)
+        .then((value) => {
+            priceCache.set(key, { value, expiresAt: Date.now() + PRICE_CACHE_TTL_MS });
+            return value;
+        })
+        .finally(() => priceRequestsInFlight.delete(key));
+    priceRequestsInFlight.set(key, request);
+    return request;
 }
 
 async function getUsdRubRate() {

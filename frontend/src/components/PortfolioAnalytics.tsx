@@ -173,6 +173,92 @@ function MetricCard({ label, value, hint, description, tone }: { label: string; 
   return <div className="analytics-metric"><div className="analytics-metric-label"><span>{label}</span><InfoTip text={description} /></div><strong className={tone}>{value}</strong><small>{hint}</small></div>;
 }
 
+type PaymentMonth = {
+  key: string;
+  label: string;
+  shortLabel: string;
+  amountKopecks: number;
+  payments: IncomeForecastPayment[];
+};
+
+function paymentMonths(payments: IncomeForecastPayment[], horizon: PortfolioIncomeForecast['horizon']): PaymentMonth[] {
+  const paymentsByMonth = new Map<string, IncomeForecastPayment[]>();
+  payments.filter((payment) => payment.date !== null).forEach((payment) => {
+    const key = payment.date!.slice(0, 7);
+    paymentsByMonth.set(key, [...(paymentsByMonth.get(key) ?? []), payment]);
+  });
+
+  const result: PaymentMonth[] = [];
+  const cursor = new Date(`${horizon.from.slice(0, 7)}-01T12:00:00`);
+  const lastMonth = horizon.to.slice(0, 7);
+  while (cursor.toISOString().slice(0, 7) <= lastMonth) {
+    const key = cursor.toISOString().slice(0, 7);
+    const monthPayments = paymentsByMonth.get(key) ?? [];
+    result.push({
+      key,
+      label: cursor.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }),
+      shortLabel: cursor.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' }).replace('.', ''),
+      amountKopecks: monthPayments.reduce((sum, payment) => sum + payment.amountKopecks, 0),
+      payments: monthPayments.sort((left, right) => left.date!.localeCompare(right.date!) || right.amountKopecks - left.amountKopecks),
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return result;
+}
+
+function FuturePaymentsChart({ payments, horizon }: { payments: IncomeForecastPayment[]; horizon: PortfolioIncomeForecast['horizon'] }) {
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const months = paymentMonths(payments, horizon);
+  const scheduledPayments = months.flatMap((month) => month.payments);
+  const undatedEstimateKopecks = payments.filter((payment) => payment.date === null).reduce((sum, payment) => sum + payment.amountKopecks, 0);
+
+  if (!scheduledPayments.length) return <div className="analytics-payments-chart-empty"><strong>Пока нет выплат с точными датами</strong><span>MOEX ещё не передал календарь купонов для текущих позиций. Оценочные дивиденды без даты показаны отдельно.</span>{undatedEstimateKopecks > 0 && <b>Оценка без даты: {money(undatedEstimateKopecks)}</b>}</div>;
+
+  const width = 860;
+  const height = 208;
+  const padding = { top: 18, right: 18, bottom: 32, left: 18 };
+  const maximum = Math.max(...months.map((month) => month.amountKopecks), 1);
+  const usableWidth = width - padding.left - padding.right;
+  const step = usableWidth / months.length;
+  const barWidth = Math.max(11, Math.min(44, step * 0.58));
+  const chartHeight = height - padding.top - padding.bottom;
+  const x = (index: number) => padding.left + step * index + (step - barWidth) / 2;
+  const y = (amountKopecks: number) => padding.top + chartHeight - amountKopecks / maximum * chartHeight;
+  const labelIndexes = [...new Set([0, Math.floor((months.length - 1) / 3), Math.floor((months.length - 1) * 2 / 3), months.length - 1])];
+  const activeMonth = activeIndex === null ? null : months[activeIndex];
+
+  const selectMonth = (event: PointerEvent<SVGSVGElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (!bounds.width) return;
+    const chartX = (event.clientX - bounds.left) / bounds.width * width;
+    const index = Math.floor((chartX - padding.left) / step);
+    setActiveIndex(Math.max(0, Math.min(months.length - 1, index)));
+  };
+
+  return <div className="analytics-payments-chart" aria-label="График будущих выплат по месяцам">
+    <div className="analytics-payments-chart-heading"><span>По месяцам · до удержания налогов</span><b>{activeMonth ? `${activeMonth.label} · ${money(activeMonth.amountKopecks)}` : 'Наведите на месяц'}</b></div>
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="Столбчатый график ожидаемых купонов по месяцам" onPointerMove={selectMonth} onPointerDown={selectMonth} onPointerLeave={() => setActiveIndex(null)}>
+      {[0.25, 0.5, 0.75].map((part) => <line key={part} x1={padding.left} x2={width - padding.right} y1={padding.top + chartHeight * part} y2={padding.top + chartHeight * part} />)}
+      <line className="analytics-payments-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
+      {months.map((month, index) => {
+        const amount = month.amountKopecks;
+        const barY = y(amount);
+        const isActive = index === activeIndex;
+        return <g key={month.key} className={isActive ? 'active' : undefined}>
+          <rect className="analytics-payment-bar-hit" x={padding.left + step * index} y={padding.top} width={step} height={chartHeight} />
+          {amount > 0 && <rect className="analytics-payment-bar" x={x(index)} y={barY} width={barWidth} height={height - padding.bottom - barY} rx="5" />}
+          {isActive && <><line className="analytics-payment-hover-line" x1={padding.left + step * index + step / 2} x2={padding.left + step * index + step / 2} y1={padding.top} y2={height - padding.bottom} /><circle className="analytics-payment-hover-dot" cx={padding.left + step * index + step / 2} cy={amount > 0 ? barY : height - padding.bottom} r="4.5" /></>}
+          {labelIndexes.includes(index) && <text x={padding.left + step * index + step / 2} y={height - 9} textAnchor="middle">{month.shortLabel}</text>}
+        </g>;
+      })}
+    </svg>
+    <div className="analytics-payments-chart-detail" aria-live="polite">
+      {activeMonth ? activeMonth.payments.length ? <><strong>{activeMonth.label}</strong><b>{money(activeMonth.amountKopecks)}</b><ul>{activeMonth.payments.slice(0, 4).map((payment, index) => <li key={`${payment.instrumentId}-${payment.date}-${index}`}><span>{date(payment.date!)} · {payment.ticker}</span><b>{money(payment.amountKopecks)}</b></li>)}</ul>{activeMonth.payments.length > 4 && <small>И ещё {activeMonth.payments.length - 4} выплат — в таблице ниже.</small>}</> : <><strong>{activeMonth.label}</strong><span>В этом месяце выплаты с подтверждённой датой пока не ожидаются.</span></> : <><strong>Календарь ближайших выплат</strong><span>Наведите на столбец, чтобы увидеть дату, бумагу и сумму.</span></>}
+    </div>
+    {undatedEstimateKopecks > 0 && <p className="analytics-payments-undated">Ещё {money(undatedEstimateKopecks)} — оценка дивидендов без объявленной даты; в столбцы она не включена.</p>}
+  </div>;
+}
+
 function IncomeForecastPanel({
   forecast,
   isLoading,
@@ -199,6 +285,7 @@ function IncomeForecastPanel({
         <MetricCard label="Купоны" value={money(forecast.couponKopecks)} hint={`${forecast.coverage.bondPositions} поз. в облигациях`} description="Плановые купонные выплаты по облигациям. Размер указан до НДФЛ; номинал при погашении сюда не включён." />
         <MetricCard label="Дивиденды — оценка" value={money(forecast.dividendKopecks)} hint={`${forecast.coverage.sharePositions} поз. в акциях`} description="Ориентир по последней опубликованной годовой дивидендной выплате. Совет директоров и собрание акционеров могут изменить размер или отменить дивиденды." />
       </div>
+      <FuturePaymentsChart payments={forecast.payments} horizon={forecast.horizon} />
       <div className="analytics-income-table"><table><thead><tr><th>Когда</th><th>Инструмент</th><th>Выплата</th><th>Вы получите</th><th>Статус</th></tr></thead><tbody>{visiblePayments.map((payment, index) => <tr key={`${payment.instrumentId}-${payment.kind}-${payment.date ?? 'estimate'}-${index}`}><td>{payment.date ? date(payment.date) : 'За 12 мес.'}</td><td><strong>{payment.ticker}</strong><span>{payment.name}</span></td><td>{payment.kind === 'coupon' ? 'Купон' : 'Дивиденды'}</td><td><b>{money(payment.amountKopecks)}</b></td><td><span className={`income-payment-status ${payment.status}`}>{payment.status === 'moex-date' ? 'MOEX' : 'Оценка'}</span><small>{payment.note}</small></td></tr>)}</tbody></table>{forecast.payments.length > visiblePayments.length && <p>Показаны ближайшие {visiblePayments.length} выплат из {forecast.payments.length}.</p>}</div>
     </> : <div className="analytics-income-empty"><strong>Пока нет выплат для расчёта</strong><span>Для облигаций нужна дата и размер купона из MOEX; для акций — последняя опубликованная дивидендная выплата.</span></div>}
     {error && <p className="analytics-income-stale">Показываем сохранённый расчёт: {error}</p>}

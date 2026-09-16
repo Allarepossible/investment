@@ -4,6 +4,7 @@ import {
     calculateRiskMetrics,
     calculateTimeWeightedReturn,
     calculateXirr,
+    estimateBondAccruedInterest,
 } from './performance.analytics';
 
 test('time-weighted return excludes a later deposit from investment performance', () => {
@@ -35,4 +36,18 @@ test('risk drawdown is calculated from flow-adjusted returns', () => {
 
     assert.equal(result.maximumDrawdownPercent, -20);
     assert.equal(result.var95Percent, 17);
+});
+
+test('bond valuation adds accrued interest and resets it on a coupon date', () => {
+    const input = {
+        asOfDay: '2026-09-16',
+        accruedInterestRub: 54.25,
+        couponValueRub: 56.1,
+        couponPeriodDays: 182,
+        nextCouponDate: '2026-09-23',
+    };
+
+    assert.equal(estimateBondAccruedInterest({ ...input, day: '2026-09-16' }), 54.25);
+    assert.equal(estimateBondAccruedInterest({ ...input, day: '2026-09-23' }), 0);
+    assert.equal(estimateBondAccruedInterest({ ...input, day: '2026-08-26' }), 47.47);
 });
