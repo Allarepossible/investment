@@ -1,11 +1,11 @@
 import pdf from 'pdf-parse';
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { inflateRawSync } from 'node:zlib';
 import { calculatePortfolioTotals, type PortfolioTransaction } from '../analytics/portfolio.analytics';
 import { db } from '../db';
-import { instruments, transactions } from '../db/schema';
+import { instruments, portfolios, transactions } from '../db/schema';
 import { addInstrument } from '../instruments/instrument.service';
-import { getPortfolio } from '../portfolios/portfolio.service';
+import { getPortfolio, listPortfolios } from '../portfolios/portfolio.service';
 import {
     listTransactions,
     parseTransactionInput,
@@ -94,20 +94,30 @@ function createPreview(
     };
 }
 
-async function markAlreadyImported(preview: BrokerReportPreview): Promise<BrokerReportPreview> {
+function storedSourceId(portfolioId: number, sourceId: string) {
+    return `portfolio:${portfolioId}:${sourceId}`;
+}
+
+async function markAlreadyImported(userId: number, preview: BrokerReportPreview): Promise<BrokerReportPreview> {
     const sourceIds = [...new Set(preview.operations.map((operation) => operation.sourceId))];
     if (!sourceIds.length) return preview;
+    const userPortfolios = await listPortfolios(userId);
+    const persistedSourceIds = [...new Set([
+        ...sourceIds,
+        ...userPortfolios.flatMap((portfolio) => sourceIds.map((sourceId) => storedSourceId(portfolio.id, sourceId))),
+    ])];
     const existing = await db
         .select({ sourceId: transactions.sourceId })
         .from(transactions)
-        .where(inArray(transactions.sourceId, sourceIds));
+        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
+        .where(and(eq(portfolios.userId, userId), inArray(transactions.sourceId, persistedSourceIds)));
     const importedSourceIds = new Set(existing.flatMap((item) => item.sourceId ? [item.sourceId] : []));
 
     return {
         ...preview,
         operations: preview.operations.map((operation) => ({
             ...operation,
-            alreadyImported: importedSourceIds.has(operation.sourceId),
+            alreadyImported: userPortfolios.some((portfolio) => importedSourceIds.has(storedSourceId(portfolio.id, operation.sourceId))) || importedSourceIds.has(operation.sourceId),
         })),
     };
 }
@@ -676,7 +686,7 @@ function parseSberCashOperations(rows: SpreadsheetRow[], warnings: string[]): Br
     return operations;
 }
 
-export async function previewTbankBrokerXlsxReport(xlsxBase64: unknown): Promise<BrokerReportPreview> {
+export async function previewTbankBrokerXlsxReport(userId: number, xlsxBase64: unknown): Promise<BrokerReportPreview> {
     if (typeof xlsxBase64 !== 'string' || !xlsxBase64.trim()) {
         throw new BrokerReportImportError('Загрузите Excel-файл отчёта.');
     }
@@ -708,7 +718,7 @@ export async function previewTbankBrokerXlsxReport(xlsxBase64: unknown): Promise
     if (!operations.length) warnings.push('В отчёте не найдено операций для импорта.');
 
     const period = reportText.match(/Отчет о сделках и операциях за период\s*(\d{2}\.\d{2}\.\d{4}\s*-\s*\d{2}\.\d{2}\.\d{4})/i)?.[1] ?? null;
-    return markAlreadyImported(createPreview('Т-Банк', 'Excel', period, operations, warnings));
+    return markAlreadyImported(userId, createPreview('Т-Банк', 'Excel', period, operations, warnings));
 }
 
 function formatReportPeriod(operations: BrokerReportOperation[]) {
@@ -722,7 +732,7 @@ function formatReportPeriod(operations: BrokerReportOperation[]) {
     return `${format(first)} — ${format(last)}`;
 }
 
-export async function previewSberBrokerXlsxReport(xlsxBase64: unknown): Promise<BrokerReportPreview> {
+export async function previewSberBrokerXlsxReport(userId: number, xlsxBase64: unknown): Promise<BrokerReportPreview> {
     if (typeof xlsxBase64 !== 'string' || !xlsxBase64.trim()) {
         throw new BrokerReportImportError('Загрузите Excel-файл отчёта Сбера.');
     }
@@ -759,10 +769,10 @@ export async function previewSberBrokerXlsxReport(xlsxBase64: unknown): Promise<
     ].sort((left, right) => left.operationDate.localeCompare(right.operationDate) || left.sourceId.localeCompare(right.sourceId));
     if (!operations.length) warnings.push('В отчёте не найдено исполненных операций для импорта.');
 
-    return markAlreadyImported(createPreview('СберИнвестиции', 'Excel', formatReportPeriod(operations), operations, warnings));
+    return markAlreadyImported(userId, createPreview('СберИнвестиции', 'Excel', formatReportPeriod(operations), operations, warnings));
 }
 
-export async function previewTbankBrokerReport(pdfBase64: unknown): Promise<BrokerReportPreview> {
+export async function previewTbankBrokerReport(userId: number, pdfBase64: unknown): Promise<BrokerReportPreview> {
     if (typeof pdfBase64 !== 'string' || !pdfBase64.trim()) {
         throw new BrokerReportImportError('Загрузите PDF-файл отчёта.');
     }
@@ -794,7 +804,7 @@ export async function previewTbankBrokerReport(pdfBase64: unknown): Promise<Brok
     if (!operations.length) warnings.push('В отчёте не найдено операций для импорта.');
 
     const period = text.match(/Отчет о сделках и операциях за период\s+(\d{2}\.\d{2}\.\d{4}\s*-\s*\d{2}\.\d{2}\.\d{4})/)?.[1] ?? null;
-    return markAlreadyImported(createPreview('Т-Банк', 'PDF', period, operations, warnings));
+    return markAlreadyImported(userId, createPreview('Т-Банк', 'PDF', period, operations, warnings));
 }
 
 async function getImportedTransactionInputs(
@@ -877,6 +887,7 @@ function getSelectedOperations(preview: BrokerReportPreview, sourceIds: unknown)
 }
 
 async function importBrokerPreview(
+    userId: number,
     portfolioId: number,
     preview: BrokerReportPreview,
     selectedSourceIds: unknown,
@@ -884,18 +895,24 @@ async function importBrokerPreview(
     if (!Number.isSafeInteger(portfolioId) || portfolioId < 1) {
         throw new BrokerReportImportError('Выберите портфель для импорта.');
     }
-    await getPortfolio(portfolioId);
+    await getPortfolio(userId, portfolioId);
 
     if (!preview.operations.length) throw new BrokerReportImportError('В отчёте нет операций для импорта.');
 
     const selectedOperations = getSelectedOperations(preview, selectedSourceIds);
     const sourceIds = selectedOperations.map((operation) => operation.sourceId);
+    const userPortfolios = await listPortfolios(userId);
+    const persistedSourceIds = [...new Set([
+        ...sourceIds,
+        ...userPortfolios.flatMap((portfolio) => sourceIds.map((sourceId) => storedSourceId(portfolio.id, sourceId))),
+    ])];
     const existingSources = await db
         .select({ sourceId: transactions.sourceId })
         .from(transactions)
-        .where(inArray(transactions.sourceId, sourceIds));
+        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
+        .where(and(eq(portfolios.userId, userId), inArray(transactions.sourceId, persistedSourceIds)));
     const existingSourceIds = new Set(existingSources.flatMap((item) => item.sourceId ? [item.sourceId] : []));
-    const newOperations = selectedOperations.filter((operation) => !existingSourceIds.has(operation.sourceId));
+    const newOperations = selectedOperations.filter((operation) => !existingSourceIds.has(operation.sourceId) && !userPortfolios.some((portfolio) => existingSourceIds.has(storedSourceId(portfolio.id, operation.sourceId))));
     if (!newOperations.length) {
         return {
             imported: 0,
@@ -904,10 +921,14 @@ async function importBrokerPreview(
         };
     }
 
-    const inputs = await getImportedTransactionInputs(portfolioId, newOperations, preview.broker);
+    const inputs = (await getImportedTransactionInputs(portfolioId, newOperations, preview.broker))
+        .map((input) => ({
+            ...input,
+            sourceId: input.sourceId ? storedSourceId(portfolioId, input.sourceId) : null,
+        }));
     const allInstruments = await db.select({ id: instruments.id, ticker: instruments.ticker, name: instruments.name }).from(instruments);
     const instrumentById = new Map(allInstruments.map((instrument) => [instrument.id, instrument]));
-    const existingTransactions = await listTransactions(portfolioId);
+    const existingTransactions = await listTransactions(userId, portfolioId);
     calculatePortfolioTotals([
         ...existingTransactions.map((transaction) => ({ ...transaction, accruedInterestKopecks: transaction.accruedInterestKopecks })),
         ...inputs.map((input, index) => toPortfolioTransaction(input, -index - 1, instrumentById)),
@@ -928,25 +949,28 @@ async function importBrokerPreview(
 }
 
 export async function importTbankBrokerReport(
+    userId: number,
     portfolioId: number,
     pdfBase64: unknown,
     selectedSourceIds: unknown,
 ) {
-    return importBrokerPreview(portfolioId, await previewTbankBrokerReport(pdfBase64), selectedSourceIds);
+    return importBrokerPreview(userId, portfolioId, await previewTbankBrokerReport(userId, pdfBase64), selectedSourceIds);
 }
 
 export async function importTbankBrokerXlsxReport(
+    userId: number,
     portfolioId: number,
     xlsxBase64: unknown,
     selectedSourceIds: unknown,
 ) {
-    return importBrokerPreview(portfolioId, await previewTbankBrokerXlsxReport(xlsxBase64), selectedSourceIds);
+    return importBrokerPreview(userId, portfolioId, await previewTbankBrokerXlsxReport(userId, xlsxBase64), selectedSourceIds);
 }
 
 export async function importSberBrokerXlsxReport(
+    userId: number,
     portfolioId: number,
     xlsxBase64: unknown,
     selectedSourceIds: unknown,
 ) {
-    return importBrokerPreview(portfolioId, await previewSberBrokerXlsxReport(xlsxBase64), selectedSourceIds);
+    return importBrokerPreview(userId, portfolioId, await previewSberBrokerXlsxReport(userId, xlsxBase64), selectedSourceIds);
 }

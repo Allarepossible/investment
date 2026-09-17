@@ -416,10 +416,11 @@ async function getDetailQuote(instrument: {
 }
 
 async function getPortfolioPositions(
+    userId: number,
     instrumentId: number,
     quote: { price: number | null },
 ) {
-    const [portfolios, transactions] = await Promise.all([listPortfolios(), listTransactions()]);
+    const [portfolios, transactions] = await Promise.all([listPortfolios(userId), listTransactions(userId)]);
     const priceKopecks = quote.price === null ? null : Math.round(quote.price * 100);
 
     return portfolios.flatMap((portfolio) => {
@@ -447,13 +448,13 @@ async function getPortfolioPositions(
     });
 }
 
-export async function getInstrumentDetails(ticker: string) {
+export async function getInstrumentDetails(userId: number, ticker: string) {
     const instrument = await getInstrument(ticker);
     const [quote, fundamentals] = await Promise.all([
         getDetailQuote(instrument),
         getSmartLabFundamentals(instrument.ticker),
     ]);
-    const positions = await getPortfolioPositions(instrument.id, quote);
+    const positions = await getPortfolioPositions(userId, instrument.id, quote);
 
     const dividendYieldPercent = fundamentals?.dividendYieldPercent
         ?? (fundamentals?.dividendPerShareRub && quote.price

@@ -5,11 +5,11 @@ import { db } from '../db';
 import { instruments } from '../db/schema';
 import { listPortfolios } from '../portfolios/portfolio.service';
 
-export async function getPortfolioComparison() {
-    const portfolios = await listPortfolios();
+export async function getPortfolioComparison(userId: number) {
+    const portfolios = await listPortfolios(userId);
     const analyticsByPortfolio = await Promise.all(portfolios.map(async (portfolio) => [
         portfolio,
-        await getPortfolioAnalytics(portfolio.id),
+        await getPortfolioAnalytics(userId, portfolio.id),
     ] as const));
     const instrumentIds = [...new Set(analyticsByPortfolio.flatMap(([, analytics]) => analytics.positions.map((position) => position.instrumentId)))];
     const savedInstruments = instrumentIds.length
@@ -51,4 +51,3 @@ export async function getPortfolioComparison() {
         portfolios: rows,
     };
 }
-

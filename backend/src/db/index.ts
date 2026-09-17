@@ -7,7 +7,12 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 const dataDirectory = path.resolve(process.cwd(), 'data');
 mkdirSync(dataDirectory, { recursive: true });
 
-const sqlite = new Database(path.join(dataDirectory, 'portfolio.db'));
+const databasePath = process.env.PORTFOLIO_DB_PATH
+    ? path.resolve(process.env.PORTFOLIO_DB_PATH)
+    : path.join(dataDirectory, 'portfolio.db');
+mkdirSync(path.dirname(databasePath), { recursive: true });
+
+const sqlite = new Database(databasePath);
 sqlite.pragma('foreign_keys = ON');
 
 export const db = drizzle(sqlite);

@@ -5,6 +5,22 @@ import {
     text,
 } from 'drizzle-orm/sqlite-core';
 
+export const users = sqliteTable('users', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    email: text('email').notNull().unique(),
+    passwordHash: text('password_hash').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+});
+
+export const sessions = sqliteTable('sessions', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+});
+
 export const instruments = sqliteTable('instruments', {
     id: integer('id').primaryKey({ autoIncrement: true }),
 
@@ -49,6 +65,10 @@ export const instruments = sqliteTable('instruments', {
 
 export const portfolios = sqliteTable('portfolios', {
     id: integer('id').primaryKey({ autoIncrement: true }),
+
+    // Nullable only for portfolios created before local authentication was
+    // introduced. The first registered local account claims those records.
+    userId: integer('user_id').references(() => users.id, { onDelete: 'restrict' }),
 
     name: text('name').notNull().unique(),
 

@@ -211,10 +211,10 @@ function createConcentration(
     };
 }
 
-async function buildPortfolioPerformance(portfolioId?: number) {
-    if (portfolioId) await getPortfolio(portfolioId);
-    const activePortfolioIds = portfolioId ? null : new Set((await listPortfolios()).map((portfolio) => portfolio.id));
-    const transactions = (await listTransactions(portfolioId)).filter(
+async function buildPortfolioPerformance(userId: number, portfolioId?: number) {
+    if (portfolioId) await getPortfolio(userId, portfolioId);
+    const activePortfolioIds = portfolioId ? null : new Set((await listPortfolios(userId)).map((portfolio) => portfolio.id));
+    const transactions = (await listTransactions(userId, portfolioId)).filter(
         (transaction) => !activePortfolioIds || activePortfolioIds.has(transaction.portfolioId),
     );
     if (!transactions.length) {
@@ -372,14 +372,14 @@ async function buildPortfolioPerformance(portfolioId?: number) {
     };
 }
 
-export async function getPortfolioPerformance(portfolioId?: number, refresh = false) {
-    const key = String(portfolioId ?? 'aggregate');
+export async function getPortfolioPerformance(userId: number, portfolioId?: number, refresh = false) {
+    const key = `${userId}:${portfolioId ?? 'aggregate'}`;
     const cached = cache.get(key);
     if (!refresh && cached && cached.expiresAt > Date.now()) return cached.value;
     const running = inFlight.get(key);
     if (running) return running;
 
-    const request = buildPortfolioPerformance(portfolioId)
+    const request = buildPortfolioPerformance(userId, portfolioId)
         .then((value) => {
             cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
             return value;
@@ -389,11 +389,13 @@ export async function getPortfolioPerformance(portfolioId?: number, refresh = fa
     return request;
 }
 
-export function invalidatePortfolioPerformance(portfolioId?: number) {
+export function invalidatePortfolioPerformance(userId: number, portfolioId?: number) {
     if (portfolioId === undefined) {
-        cache.clear();
+        for (const key of cache.keys()) {
+            if (key.startsWith(`${userId}:`)) cache.delete(key);
+        }
         return;
     }
-    cache.delete(String(portfolioId ?? 'aggregate'));
-    cache.delete('aggregate');
+    cache.delete(`${userId}:${portfolioId}`);
+    cache.delete(`${userId}:aggregate`);
 }

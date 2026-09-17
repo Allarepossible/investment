@@ -4,6 +4,7 @@ import './App.css';
 import { InstrumentFinancialChart, InstrumentPriceChart } from './components/InstrumentCharts';
 import { PortfolioAnalyticsPage, type PortfolioIncomeForecast, type PortfolioPerformance } from './components/PortfolioAnalytics';
 import { PortfolioComparisonPage, type PortfolioComparison } from './components/PortfolioComparison';
+import { AuthScreen, type AuthSession } from './components/AuthScreen';
 import { PortfolioCharts } from './components/PortfolioCharts';
 
 type Instrument = { id: number; ticker: string; name: string; isin: string | null; type: string; board: string | null; market: string | null; currency: string; lotSize: number | null; minPriceStep: number | null; logoPath: string | null; logoStatus: 'pending' | 'found' | 'missing' };
@@ -203,6 +204,7 @@ function InstrumentDetailPage({
 }
 
 function App() {
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [transactionInstruments, setTransactionInstruments] = useState<Instrument[]>([]);
   const [query, setQuery] = useState('');
@@ -271,7 +273,10 @@ function App() {
     pendingBackendRequests.current += 1;
     setIsBackendLoading(true);
     try {
-      return await fetch(`${apiUrl}${path}`, { ...init, signal: controller.signal });
+      if (!authSession?.authenticated) throw new Error('Требуется вход в аккаунт.');
+      const response = await fetch(`${apiUrl}${path}`, { ...init, signal: controller.signal, credentials: 'include' });
+      if (response.status === 401) setAuthSession({ authenticated: false, needsRegistration: false, user: null });
+      return response;
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error(`Сервер не ответил за ${Math.ceil(timeoutMs / 1000)} секунд. Проверьте соединение и попробуйте снова.`, { cause: error });
@@ -282,7 +287,22 @@ function App() {
       pendingBackendRequests.current -= 1;
       setIsBackendLoading(pendingBackendRequests.current > 0);
     }
+  }, [authSession?.authenticated]);
+
+  const loadAuthSession = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiUrl}/auth/session`, { credentials: 'include' });
+      if (!response.ok) throw new Error();
+      setAuthSession(await response.json() as AuthSession);
+    } catch {
+      setAuthSession({ authenticated: false, needsRegistration: false, user: null });
+    }
   }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => void loadAuthSession(), 0);
+    return () => window.clearTimeout(timeout);
+  }, [loadAuthSession]);
 
   const loadInstruments = useCallback(async (search = '') => {
     try {
@@ -870,8 +890,23 @@ function App() {
   const allVisibleTransactionsSelected = transactions.length > 0 && selectedVisibleTransactions.length === transactions.length;
   const allVisibleInstrumentsSelected = sortedInstruments.length > 0 && selectedVisibleInstruments.length === sortedInstruments.length;
 
+  async function logout() {
+    try {
+      await fetch(`${apiUrl}/auth/logout`, { method: 'POST', credentials: 'include' });
+    } finally {
+      setAuthSession({ authenticated: false, needsRegistration: false, user: null });
+      setSelectedPortfolioId(null);
+      setPortfolioPerformance(null);
+      setIncomeForecast(null);
+      setPortfolioComparison(null);
+      setBrokerPreview(null);
+    }
+  }
+
+  if (!authSession?.authenticated) return <AuthScreen session={authSession} apiUrl={apiUrl} onAuthenticated={setAuthSession} />;
+
   return <div className="app-shell">
-    <nav className="top-navigation" aria-label="Основная навигация"><a className="top-brand" href="#overview" onClick={() => setActivePage('overview')}><span>●</span> Капитал</a><div className="nav-links">{navigationPages.map((page) => <a key={page} className={activePage === page || (page === 'instruments' && activePage === 'instrument') ? 'active' : ''} href={`#${page}`} onClick={() => setActivePage(page)}>{pageTitles[page]}{page === 'portfolios' && <small>{portfolios.length}</small>}</a>)}</div><div className="profile">АБ</div></nav>
+    <nav className="top-navigation" aria-label="Основная навигация"><a className="top-brand" href="#overview" onClick={() => setActivePage('overview')}><span>●</span> Капитал</a><div className="nav-links">{navigationPages.map((page) => <a key={page} className={activePage === page || (page === 'instruments' && activePage === 'instrument') ? 'active' : ''} href={`#${page}`} onClick={() => setActivePage(page)}>{pageTitles[page]}{page === 'portfolios' && <small>{portfolios.length}</small>}</a>)}</div><button className="profile" type="button" title={`Выйти: ${authSession.user?.email ?? ''}`} onClick={() => void logout()}>{authSession.user?.email.slice(0, 1).toUpperCase() ?? 'А'}</button></nav>
     <main className="app" id="top">
       <div className="topbar"><span className="crumb">Инвестиции <b>/</b> {activePage === 'instrument' && selectedInstrumentTicker ? `Инструменты / ${selectedInstrumentTicker}` : pageTitles[activePage]}</span>{isBackendLoading && <span className="backend-loading" role="status" aria-live="polite"><i />Загружаем данные…</span>}</div>
       {activePage !== 'instrument' && <header className="page-intro"><p className="eyebrow">{activePage === 'overview' ? 'ОБЩИЙ ПРОФИЛЬ' : activePage === 'portfolios' ? 'УПРАВЛЕНИЕ СТРАТЕГИЯМИ' : activePage === 'comparison' ? 'СРАВНЕНИЕ СТРАТЕГИЙ' : activePage === 'operations' ? 'УЧЁТ И АНАЛИТИКА' : activePage === 'analytics' ? 'ДОХОДНОСТЬ И РИСК' : 'КАТАЛОГ РЫНКА'}</p><h1>{activePage === 'overview' ? 'Обзор портфеля' : activePage === 'portfolios' ? 'Мои портфели' : activePage === 'comparison' ? 'Сравнение портфелей' : activePage === 'operations' ? 'Операции' : activePage === 'analytics' ? 'Аналитика портфеля' : 'Инструменты'}</h1><p className="intro">{activePage === 'overview' ? 'Главные показатели по всем вашим инвестициям в одном месте.' : activePage === 'portfolios' ? 'Создавайте отдельные стратегии и управляйте ими независимо.' : activePage === 'comparison' ? 'Смотрите, как разные стратегии отличаются по результату и структуре активов.' : activePage === 'operations' ? 'Добавляйте сделки, пополнения и выплаты — показатели пересчитаются автоматически.' : activePage === 'analytics' ? 'Смотрите историческую доходность, структуру и риски по всем портфелям или по отдельности.' : 'Находите бумаги Московской биржи и собирайте базу для своего портфеля.'}</p></header>}

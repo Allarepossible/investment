@@ -112,8 +112,8 @@ export function parseTransactionInput(value: unknown): TransactionInput {
     };
 }
 
-export async function listTransactions(portfolioId?: number) {
-    if (portfolioId) await getPortfolio(portfolioId);
+export async function listTransactions(userId: number, portfolioId?: number) {
+    if (portfolioId) await getPortfolio(userId, portfolioId);
 
     const query = db
         .select({
@@ -140,8 +140,8 @@ export async function listTransactions(portfolioId?: number) {
     return query
         .where(
             portfolioId
-                ? and(eq(transactions.portfolioId, portfolioId), isNull(portfolios.archivedAt))
-                : isNull(portfolios.archivedAt),
+                ? and(eq(transactions.portfolioId, portfolioId), eq(portfolios.userId, userId), isNull(portfolios.archivedAt))
+                : and(eq(portfolios.userId, userId), isNull(portfolios.archivedAt)),
         )
         .orderBy(asc(transactions.operationDate), asc(transactions.id));
 }
@@ -165,12 +165,12 @@ function toPortfolioTransactions(
     }));
 }
 
-export async function createTransaction(input: TransactionInput) {
-    await getPortfolio(input.portfolioId);
+export async function createTransaction(userId: number, input: TransactionInput) {
+    await getPortfolio(userId, input.portfolioId);
     if (input.instrumentId) await getInstrumentById(input.instrumentId);
 
     if (input.type === 'SELL' && input.instrumentId) {
-        const totals = calculatePortfolioTotals(toPortfolioTransactions(await listTransactions(input.portfolioId)));
+        const totals = calculatePortfolioTotals(toPortfolioTransactions(await listTransactions(userId, input.portfolioId)));
         const position = totals.positions.find((item) => item.instrumentId === input.instrumentId);
         if (!position || position.quantity < (input.quantity ?? 0)) {
             throw new TransactionValidationError('Sell quantity exceeds the available position');
@@ -202,10 +202,10 @@ function selectedIds(value: unknown) {
     return ids as number[];
 }
 
-export async function deleteTransactions(value: unknown) {
+export async function deleteTransactions(userId: number, value: unknown) {
     const ids = selectedIds(value);
     const selected = new Set(ids);
-    const rows = await listTransactions();
+    const rows = await listTransactions(userId);
     const transactionsToDelete = rows.filter((item) => selected.has(item.id));
     if (transactionsToDelete.length !== ids.length) {
         throw new TransactionNotFoundError('Одна или несколько выбранных операций не найдены');
@@ -227,6 +227,6 @@ export async function deleteTransactions(value: unknown) {
     return { deleted: ids.length };
 }
 
-export async function deleteTransaction(id: number) {
-    await deleteTransactions([id]);
+export async function deleteTransaction(userId: number, id: number) {
+    await deleteTransactions(userId, [id]);
 }

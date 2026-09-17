@@ -226,6 +226,16 @@ Backend запускается на:
 http://localhost:3000
 ```
 
+### Локальный аккаунт
+
+При первом открытии frontend предложит создать аккаунт. Пароль сохраняется в SQLite только в виде хэша, а браузер получает HttpOnly-сессию на 30 дней.
+
+Если в локальной базе уже были портфели и операции до обновления, первый зарегистрированный аккаунт автоматически становится их владельцем. Последующие аккаунты начинают с пустых портфелей и не могут читать чужие операции или аналитику.
+
+Миграции применяются при запуске backend. Перед переносом `backend/data/portfolio.db` на другой компьютер сохраните её резервную копию.
+
+Для изолированного запуска или будущего развёртывания путь к базе можно задать через `PORTFOLIO_DB_PATH`; без неё используется `backend/data/portfolio.db`.
+
 ---
 
 # ▶️ Запуск Frontend
@@ -927,11 +937,11 @@ MOEX используется как источник рыночной инфо�
 
 ## Phase 8 — Authentication & Production
 
-* [ ] User registration
-* [ ] Login
-* [ ] Session management
-* [ ] User-specific portfolios
-* [ ] API security
+* [x] User registration
+* [x] Login
+* [x] Session management
+* [x] User-specific portfolios
+* [x] API security
 * [ ] Production database
 * [ ] Deployment
 * [ ] Monitoring

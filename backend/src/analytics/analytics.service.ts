@@ -14,17 +14,17 @@ function isBond(instrument: { market: string | null; type: string }) {
     return instrument.market === 'bonds' || instrument.type.includes('bond');
 }
 
-export async function getPortfolioPositionTotals(portfolioId?: number) {
-    if (portfolioId) await getPortfolio(portfolioId);
-    const activePortfolios = portfolioId ? null : new Set((await listPortfolios()).map((item) => item.id));
-    const transactions = (await listTransactions(portfolioId)).filter(
+export async function getPortfolioPositionTotals(userId: number, portfolioId?: number) {
+    if (portfolioId) await getPortfolio(userId, portfolioId);
+    const activePortfolios = portfolioId ? null : new Set((await listPortfolios(userId)).map((item) => item.id));
+    const transactions = (await listTransactions(userId, portfolioId)).filter(
         (transaction) => !activePortfolios || activePortfolios.has(transaction.portfolioId),
     );
     return calculatePortfolioTotals(transactions);
 }
 
-export async function getPortfolioAnalytics(portfolioId?: number) {
-    const totals = await getPortfolioPositionTotals(portfolioId);
+export async function getPortfolioAnalytics(userId: number, portfolioId?: number) {
+    const totals = await getPortfolioPositionTotals(userId, portfolioId);
     const quotes = await Promise.all(
         totals.positions.map(async (position) => {
             try {
@@ -73,8 +73,8 @@ export async function getPortfolioAnalytics(portfolioId?: number) {
     };
 }
 
-export async function getBondAnalytics(portfolioId?: number) {
-    const analytics = await getPortfolioAnalytics(portfolioId);
+export async function getBondAnalytics(userId: number, portfolioId?: number) {
+    const analytics = await getPortfolioAnalytics(userId, portfolioId);
     const positionIds = analytics.positions.map((position) => position.instrumentId);
     const savedInstruments = positionIds.length
         ? await db

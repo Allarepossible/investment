@@ -106,8 +106,8 @@ export function projectCouponPayments(input: {
     return payments;
 }
 
-async function buildIncomeForecast(portfolioId?: number) {
-    const totals = await getPortfolioPositionTotals(portfolioId);
+async function buildIncomeForecast(userId: number, portfolioId?: number) {
+    const totals = await getPortfolioPositionTotals(userId, portfolioId);
     const today = toDay(new Date());
     const horizonEnd = addDays(today, HORIZON_DAYS);
     const positionIds = totals.positions.map((position) => position.instrumentId);
@@ -187,15 +187,15 @@ async function buildIncomeForecast(portfolioId?: number) {
     };
 }
 
-export async function getPortfolioIncomeForecast(portfolioId?: number, refresh = false) {
-    const key = String(portfolioId ?? 'aggregate');
+export async function getPortfolioIncomeForecast(userId: number, portfolioId?: number, refresh = false) {
+    const key = `${userId}:${portfolioId ?? 'aggregate'}`;
     const cached = cache.get(key);
     if (!refresh && cached && cached.expiresAt > Date.now()) return cached.value;
 
     const running = inFlight.get(key);
     if (running) return running;
 
-    const request = buildIncomeForecast(portfolioId)
+    const request = buildIncomeForecast(userId, portfolioId)
         .then((value) => {
             cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
             return value;
@@ -205,11 +205,14 @@ export async function getPortfolioIncomeForecast(portfolioId?: number, refresh =
     return request;
 }
 
-export function invalidatePortfolioIncomeForecast(portfolioId?: number) {
+export function invalidatePortfolioIncomeForecast(userId: number, portfolioId?: number) {
     if (portfolioId === undefined) {
-        cache.clear();
+        cache.delete(`${userId}:aggregate`);
+        for (const key of cache.keys()) {
+            if (key.startsWith(`${userId}:`)) cache.delete(key);
+        }
         return;
     }
-    cache.delete(String(portfolioId));
-    cache.delete('aggregate');
+    cache.delete(`${userId}:${portfolioId}`);
+    cache.delete(`${userId}:aggregate`);
 }

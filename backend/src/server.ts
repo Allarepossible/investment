@@ -2,6 +2,16 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import {
+    AuthenticationError,
+    AuthValidationError,
+    authenticateUser,
+    createSession,
+    deleteSession,
+    getSessionUser,
+    hasRegisteredUsers,
+    registerUser,
+} from './auth/auth.service';
+import {
     addInstrument,
     getInstrument,
     getInstrumentPrice,
@@ -59,7 +69,7 @@ const PORT = Number(process.env.PORT ?? 3000);
 const corsOrigins = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.trim()).filter(Boolean);
 
 
-app.use(cors({ origin: corsOrigins?.length ? corsOrigins : true }));
+app.use(cors({ origin: corsOrigins?.length ? corsOrigins : true, credentials: true }));
 // An 8 MB PDF or Excel report becomes roughly 10.7 MB after Base64 encoding in JSON.
 app.use(express.json({ limit: '12mb' }));
 app.use('/api/logos', express.static(path.resolve(process.cwd(), 'data', 'logos'), {
@@ -71,6 +81,84 @@ app.get('/api/health', (_req, res) => {
     res.json({
         status: 'ok',
     });
+});
+
+const sessionCookieName = 'capital_session';
+const sessionCookieOptions = {
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    maxAge: 30 * 24 * 60 * 60 * 1_000,
+};
+
+function getCookie(req: express.Request, name: string) {
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader) return undefined;
+    const prefix = `${name}=`;
+    const item = cookieHeader.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
+    return item ? decodeURIComponent(item.slice(prefix.length)) : undefined;
+}
+
+function sessionUserId(res: express.Response) {
+    const user = res.locals.user as { id: number } | undefined;
+    if (!user) throw new AuthenticationError('Требуется вход в аккаунт.');
+    return user.id;
+}
+
+app.get('/api/auth/session', async (req, res, next) => {
+    try {
+        const user = await getSessionUser(getCookie(req, sessionCookieName));
+        res.json({ authenticated: Boolean(user), needsRegistration: !(await hasRegisteredUsers()), user });
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/auth/register', async (req, res, next) => {
+    try {
+        const user = await registerUser({ email: req.body?.email, password: req.body?.password });
+        const session = await createSession(user.id);
+        res.cookie(sessionCookieName, session.token, sessionCookieOptions);
+        res.status(201).json({ authenticated: true, user });
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/auth/login', async (req, res, next) => {
+    try {
+        const user = await authenticateUser({ email: req.body?.email, password: req.body?.password });
+        const session = await createSession(user.id);
+        res.cookie(sessionCookieName, session.token, sessionCookieOptions);
+        res.json({ authenticated: true, user });
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.post('/api/auth/logout', async (req, res, next) => {
+    try {
+        await deleteSession(getCookie(req, sessionCookieName));
+        res.clearCookie(sessionCookieName, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' });
+        res.status(204).end();
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.use('/api', async (req, res, next) => {
+    try {
+        const user = await getSessionUser(getCookie(req, sessionCookieName));
+        if (!user) {
+            res.status(401).json({ error: 'Требуется вход в аккаунт.' });
+            return;
+        }
+        res.locals.user = user;
+        next();
+    } catch (error) {
+        next(error);
+    }
 });
 
 app.get('/api/instruments', async (req, res, next) => {
@@ -133,7 +221,7 @@ app.post('/api/instruments/logos/sync', async (req, res, next) => {
 
 app.get('/api/instruments/:ticker/details', async (req, res, next) => {
     try {
-        res.json(await getInstrumentDetails(req.params.ticker));
+        res.json(await getInstrumentDetails(sessionUserId(res), req.params.ticker));
     } catch (error) {
         next(error);
     }
@@ -182,7 +270,7 @@ function getPortfolioName(value: unknown) {
 
 app.get('/api/portfolios', async (_req, res, next) => {
     try {
-        res.json(await listPortfolios());
+        res.json(await listPortfolios(sessionUserId(res)));
     } catch (error) {
         next(error);
     }
@@ -190,7 +278,7 @@ app.get('/api/portfolios', async (_req, res, next) => {
 
 app.get('/api/portfolios/aggregate', async (_req, res, next) => {
     try {
-        res.json(await getAggregatePortfolio());
+        res.json(await getAggregatePortfolio(sessionUserId(res)));
     } catch (error) {
         next(error);
     }
@@ -198,7 +286,7 @@ app.get('/api/portfolios/aggregate', async (_req, res, next) => {
 
 app.get('/api/analytics', async (_req, res, next) => {
     try {
-        res.json(await getPortfolioAnalytics());
+        res.json(await getPortfolioAnalytics(sessionUserId(res)));
     } catch (error) {
         next(error);
     }
@@ -206,7 +294,7 @@ app.get('/api/analytics', async (_req, res, next) => {
 
 app.get('/api/analytics/comparison', async (_req, res, next) => {
     try {
-        res.json(await getPortfolioComparison());
+        res.json(await getPortfolioComparison(sessionUserId(res)));
     } catch (error) {
         next(error);
     }
@@ -219,7 +307,7 @@ app.get('/api/analytics/performance', async (req, res, next) => {
         return;
     }
     try {
-        res.json(await getPortfolioPerformance(portfolioId, req.query.refresh === 'true'));
+        res.json(await getPortfolioPerformance(sessionUserId(res), portfolioId, req.query.refresh === 'true'));
     } catch (error) {
         next(error);
     }
@@ -232,7 +320,7 @@ app.get('/api/analytics/income-forecast', async (req, res, next) => {
         return;
     }
     try {
-        res.json(await getPortfolioIncomeForecast(portfolioId, req.query.refresh === 'true'));
+        res.json(await getPortfolioIncomeForecast(sessionUserId(res), portfolioId, req.query.refresh === 'true'));
     } catch (error) {
         next(error);
     }
@@ -245,7 +333,7 @@ app.get('/api/analytics/bonds', async (req, res, next) => {
         return;
     }
     try {
-        res.json(await getBondAnalytics(portfolioId));
+        res.json(await getBondAnalytics(sessionUserId(res), portfolioId));
     } catch (error) {
         next(error);
     }
@@ -258,7 +346,7 @@ app.get('/api/portfolios/:id/analytics', async (req, res, next) => {
         return;
     }
     try {
-        res.json(await getPortfolioAnalytics(id));
+        res.json(await getPortfolioAnalytics(sessionUserId(res), id));
     } catch (error) {
         next(error);
     }
@@ -272,7 +360,7 @@ app.post('/api/portfolios', async (req, res, next) => {
     }
 
     try {
-        res.status(201).json(await createPortfolio(name));
+        res.status(201).json(await createPortfolio(sessionUserId(res), name));
     } catch (error) {
         next(error);
     }
@@ -287,7 +375,7 @@ app.put('/api/portfolios/:id', async (req, res, next) => {
     }
 
     try {
-        res.json(await updatePortfolio(id, name));
+        res.json(await updatePortfolio(sessionUserId(res), id, name));
     } catch (error) {
         next(error);
     }
@@ -301,9 +389,10 @@ app.delete('/api/portfolios/:id', async (req, res, next) => {
     }
 
     try {
-        await deletePortfolio(id);
-        invalidatePortfolioPerformance(id);
-        invalidatePortfolioIncomeForecast(id);
+        const userId = sessionUserId(res);
+        await deletePortfolio(userId, id);
+        invalidatePortfolioPerformance(userId, id);
+        invalidatePortfolioIncomeForecast(userId, id);
         res.status(204).end();
     } catch (error) {
         next(error);
@@ -317,7 +406,7 @@ app.get('/api/transactions', async (req, res, next) => {
         return;
     }
     try {
-        res.json(await listTransactions(portfolioId));
+        res.json(await listTransactions(sessionUserId(res), portfolioId));
     } catch (error) {
         next(error);
     }
@@ -325,7 +414,7 @@ app.get('/api/transactions', async (req, res, next) => {
 
 app.post('/api/imports/tbank/preview', async (req, res, next) => {
     try {
-        res.json(await previewTbankBrokerReport(req.body?.pdfBase64));
+        res.json(await previewTbankBrokerReport(sessionUserId(res), req.body?.pdfBase64));
     } catch (error) {
         next(error);
     }
@@ -334,13 +423,15 @@ app.post('/api/imports/tbank/preview', async (req, res, next) => {
 app.post('/api/imports/tbank/commit', async (req, res, next) => {
     const portfolioId = Number(req.body?.portfolioId);
     try {
+        const userId = sessionUserId(res);
         const result = await importTbankBrokerReport(
+            userId,
             portfolioId,
             req.body?.pdfBase64,
             req.body?.sourceIds,
         );
-        invalidatePortfolioPerformance(portfolioId);
-        invalidatePortfolioIncomeForecast(portfolioId);
+        invalidatePortfolioPerformance(userId, portfolioId);
+        invalidatePortfolioIncomeForecast(userId, portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -349,7 +440,7 @@ app.post('/api/imports/tbank/commit', async (req, res, next) => {
 
 app.post('/api/imports/tbank/xlsx/preview', async (req, res, next) => {
     try {
-        res.json(await previewTbankBrokerXlsxReport(req.body?.xlsxBase64));
+        res.json(await previewTbankBrokerXlsxReport(sessionUserId(res), req.body?.xlsxBase64));
     } catch (error) {
         next(error);
     }
@@ -358,13 +449,15 @@ app.post('/api/imports/tbank/xlsx/preview', async (req, res, next) => {
 app.post('/api/imports/tbank/xlsx/commit', async (req, res, next) => {
     const portfolioId = Number(req.body?.portfolioId);
     try {
+        const userId = sessionUserId(res);
         const result = await importTbankBrokerXlsxReport(
+            userId,
             portfolioId,
             req.body?.xlsxBase64,
             req.body?.sourceIds,
         );
-        invalidatePortfolioPerformance(portfolioId);
-        invalidatePortfolioIncomeForecast(portfolioId);
+        invalidatePortfolioPerformance(userId, portfolioId);
+        invalidatePortfolioIncomeForecast(userId, portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -373,7 +466,7 @@ app.post('/api/imports/tbank/xlsx/commit', async (req, res, next) => {
 
 app.post('/api/imports/sber/xlsx/preview', async (req, res, next) => {
     try {
-        res.json(await previewSberBrokerXlsxReport(req.body?.xlsxBase64));
+        res.json(await previewSberBrokerXlsxReport(sessionUserId(res), req.body?.xlsxBase64));
     } catch (error) {
         next(error);
     }
@@ -382,13 +475,15 @@ app.post('/api/imports/sber/xlsx/preview', async (req, res, next) => {
 app.post('/api/imports/sber/xlsx/commit', async (req, res, next) => {
     const portfolioId = Number(req.body?.portfolioId);
     try {
+        const userId = sessionUserId(res);
         const result = await importSberBrokerXlsxReport(
+            userId,
             portfolioId,
             req.body?.xlsxBase64,
             req.body?.sourceIds,
         );
-        invalidatePortfolioPerformance(portfolioId);
-        invalidatePortfolioIncomeForecast(portfolioId);
+        invalidatePortfolioPerformance(userId, portfolioId);
+        invalidatePortfolioIncomeForecast(userId, portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -397,9 +492,10 @@ app.post('/api/imports/sber/xlsx/commit', async (req, res, next) => {
 
 app.post('/api/transactions', async (req, res, next) => {
     try {
-        const transaction = await createTransaction(parseTransactionInput(req.body));
-        invalidatePortfolioPerformance(transaction.portfolioId);
-        invalidatePortfolioIncomeForecast(transaction.portfolioId);
+        const userId = sessionUserId(res);
+        const transaction = await createTransaction(userId, parseTransactionInput(req.body));
+        invalidatePortfolioPerformance(userId, transaction.portfolioId);
+        invalidatePortfolioIncomeForecast(userId, transaction.portfolioId);
         res.status(201).json(transaction);
     } catch (error) {
         next(error);
@@ -408,9 +504,10 @@ app.post('/api/transactions', async (req, res, next) => {
 
 app.delete('/api/transactions', async (req, res, next) => {
     try {
-        const result = await deleteTransactions(req.body?.ids);
-        invalidatePortfolioPerformance();
-        invalidatePortfolioIncomeForecast();
+        const userId = sessionUserId(res);
+        const result = await deleteTransactions(userId, req.body?.ids);
+        invalidatePortfolioPerformance(userId);
+        invalidatePortfolioIncomeForecast(userId);
         res.json(result);
     } catch (error) {
         next(error);
@@ -424,9 +521,10 @@ app.delete('/api/transactions/:id', async (req, res, next) => {
         return;
     }
     try {
-        await deleteTransaction(id);
-        invalidatePortfolioPerformance();
-        invalidatePortfolioIncomeForecast();
+        const userId = sessionUserId(res);
+        await deleteTransaction(userId, id);
+        invalidatePortfolioPerformance(userId);
+        invalidatePortfolioIncomeForecast(userId);
         res.status(204).end();
     } catch (error) {
         next(error);
@@ -440,7 +538,12 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
         return;
     }
 
-    if (error instanceof TransactionValidationError || error instanceof InstrumentValidationError || error instanceof BrokerReportImportError) {
+    if (error instanceof AuthenticationError) {
+        res.status(401).json({ error: error.message });
+        return;
+    }
+
+    if (error instanceof AuthValidationError || error instanceof TransactionValidationError || error instanceof InstrumentValidationError || error instanceof BrokerReportImportError) {
         res.status(400).json({ error: error.message });
         return;
     }
