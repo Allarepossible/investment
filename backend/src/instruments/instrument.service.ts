@@ -33,6 +33,26 @@ function normalizeTicker(ticker: string) {
     return ticker.trim().toUpperCase();
 }
 
+const isinPattern = /^[A-Z]{2}[A-Z0-9]{10}$/;
+
+async function resolveMoexSecurityId(identifier: string) {
+    const normalized = normalizeTicker(identifier);
+    if (!isinPattern.test(normalized)) return normalized;
+
+    const search = await moex.get<MoexSearchResponse>(
+        '/securities.json',
+        { q: normalized, 'iss.meta': 'off' },
+    );
+    const match = mapMoexSearch(search, normalized)
+        .find((instrument) => instrument.isin?.toUpperCase() === normalized);
+
+    if (!match) {
+        throw new InstrumentNotFoundError(`Instrument with ISIN ${normalized} was not found`);
+    }
+
+    return match.ticker;
+}
+
 function isBond(instrument: { market: string | null; type: string }) {
     return instrument.market === 'bonds' || instrument.type.includes('bond');
 }
@@ -95,8 +115,9 @@ function normalizeInstrumentPrice(
 }
 
 export async function getInstrumentFromMoex(ticker: string) {
+    const securityId = await resolveMoexSecurityId(ticker);
     const data = await moex.get<MoexSecurityResponse>(
-        `/securities/${normalizeTicker(ticker)}.json`,
+        `/securities/${securityId}.json`,
     );
 
     const instrument = mapMoexSecurity(data);

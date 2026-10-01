@@ -16,6 +16,7 @@ type BrokerImportOperation = { type: 'BUY' | 'SELL' | 'DEPOSIT' | 'WITHDRAWAL' |
 type BrokerReportFormat = 'pdf' | 'xlsx';
 type BrokerName = 'tbank' | 'sber';
 type BrokerImportPreview = { broker: 'Т-Банк' | 'СберИнвестиции'; format: 'PDF' | 'Excel'; period: string | null; operations: BrokerImportOperation[]; warnings: string[]; summary: { trades: number; deposits: number; withdrawals: number; commissionsKopecks: number } };
+type BrokerImportCommit = { imported: number; selectedSourceIds: string[]; skippedAlreadyImported: number; skippedInvalid: Array<{ sourceId: string; ticker: string | null; description: string; reason: string }> };
 type Analytics = { cashKopecks: number; securitiesValueKopecks: number; totalValueKopecks: number; netContributionsKopecks: number; totalPnlKopecks: number; positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; averageCostKopecks: number; marketValueKopecks: number | null; unrealizedPnlKopecks: number | null; allocationPercent: number | null }> };
 type BondAnalytics = { positions: Array<{ instrumentId: number; ticker: string; name: string; quantity: number; investedKopecks: number; pricePercent: number | null; nextCouponDate: string | null; nextCouponKopecks: number | null; offerDate: string | null; maturityDate: string | null; creditRating: string | null; currentYieldPercent: number | null; yieldToMaturityPercent: number | null }> };
 type Page = 'overview' | 'portfolios' | 'operations' | 'instruments' | 'analytics' | 'comparison' | 'instrument';
@@ -24,6 +25,7 @@ type InstrumentSortKey = 'instrument' | 'type' | 'sector' | 'price' | 'pe' | 'ps
 type SortDirection = 'asc' | 'desc';
 type HistoryRange = 'all' | '5y' | '1y' | '1m' | '1w' | '1d';
 type Theme = 'light' | 'dark';
+type Toast = { tone: 'success' | 'error'; title: string; detail: string };
 type InstrumentDetails = {
   instrument: Instrument;
   quote: {
@@ -77,6 +79,18 @@ const historyRangeOptions: Array<{ value: HistoryRange; label: string }> = [
   { value: 'all', label: 'Всё время' }, { value: '5y', label: '5 лет' }, { value: '1y', label: 'Год' },
   { value: '1m', label: 'Месяц' }, { value: '1w', label: 'Неделя' }, { value: '1d', label: 'День' },
 ];
+
+function transactionErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : 'Не удалось добавить операцию.';
+  if (message.includes('Trades require an instrument')) return 'Для покупки или продажи выберите инструмент.';
+  if (message.includes('requires an instrument')) return 'Для выплаты выберите инструмент.';
+  if (message.includes('quantity must be a positive integer')) return 'Укажите количество бумаг больше нуля.';
+  if (message.includes('priceKopecks must be a positive integer')) return 'Укажите цену больше нуля.';
+  if (message.includes('amountKopecks must be a positive integer')) return 'Укажите сумму больше нуля.';
+  if (message.includes('Sell quantity exceeds')) return 'Нельзя продать больше бумаг, чем есть в выбранном портфеле.';
+  if (message.includes('operationDate must be a valid date')) return 'Укажите корректную дату операции.';
+  return message;
+}
 
 function getRouteFromHash() {
   const [page, rawTicker] = window.location.hash.replace(/^#/, '').split('/');
@@ -246,6 +260,8 @@ function App() {
   const [commission, setCommission] = useState('0');
   const [operationDate, setOperationDate] = useState(new Date().toISOString().slice(0, 10));
   const [transactionMessage, setTransactionMessage] = useState('');
+  const [isAddingTransaction, setIsAddingTransaction] = useState(false);
+  const [toast, setToast] = useState<Toast | null>(null);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<Set<number>>(new Set());
   const [isDeletingTransactions, setIsDeletingTransactions] = useState(false);
   const [brokerFileBase64, setBrokerFileBase64] = useState('');
@@ -310,6 +326,12 @@ function App() {
     document.documentElement.style.colorScheme = theme;
     window.localStorage.setItem('capital-theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timeout = window.setTimeout(() => setToast(null), 7_000);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void loadAuthSession(), 0);
@@ -635,7 +657,7 @@ function App() {
   }
 
   async function removePortfolio(id: number) {
-    if (!window.confirm('Удалить этот портфель? Операции появятся в следующей фазе.')) return;
+    if (!window.confirm('Удалить портфель вместе со всеми его операциями? Это действие нельзя отменить.')) return;
     try {
       const response = await apiFetch(`/portfolios/${id}`, { method: 'DELETE' });
       if (!response.ok) throw new Error();
@@ -648,7 +670,12 @@ function App() {
 
   async function addTransaction(event: FormEvent) {
     event.preventDefault();
-    if (!selectedPortfolioId) { setTransactionMessage('Сначала выберите портфель.'); return; }
+    if (!selectedPortfolioId) {
+      const detail = 'Сначала выберите портфель.';
+      setTransactionMessage(detail);
+      setToast({ tone: 'error', title: 'Операция не добавлена', detail });
+      return;
+    }
     const isTrade = tradeTypes.has(transactionType);
     const needsInstrument = instrumentTypes.has(transactionType);
     const amountKopecks = isTrade ? null : toKopecks(amount);
@@ -663,14 +690,20 @@ function App() {
       operationDate,
     };
     setTransactionMessage('');
+    setIsAddingTransaction(true);
     try {
       const response = await apiFetch('/transactions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(data.error ?? 'Не удалось добавить операцию');
       setQuantity(''); setPrice(''); setAmount(''); setCommission('0');
       setTransactionMessage('Операция добавлена.');
+      setToast({ tone: 'success', title: 'Операция добавлена', detail: 'Показатели портфеля обновлены.' });
       await loadActivity(selectedPortfolioId);
-    } catch (error) { setTransactionMessage(error instanceof Error ? error.message : 'Не удалось добавить операцию'); }
+    } catch (error) {
+      const detail = transactionErrorMessage(error);
+      setTransactionMessage(detail);
+      setToast({ tone: 'error', title: 'Операция не добавлена', detail });
+    } finally { setIsAddingTransaction(false); }
   }
 
   function toggleTransactionSelection(id: number) {
@@ -754,7 +787,7 @@ function App() {
           body: JSON.stringify(selectedBroker === 'sber' || brokerReportFormat === 'xlsx' ? { xlsxBase64: brokerFileBase64 } : { pdfBase64: brokerFileBase64 }),
         },
       );
-      const data = await response.json();
+      const data = await response.json().catch(() => ({})) as { error?: string; imported?: number; skippedAlreadyImported?: number };
       if (!response.ok) throw new Error(data.error ?? 'Не удалось разобрать отчёт');
       const preview = data as BrokerImportPreview;
       setBrokerPreview(preview);
@@ -785,13 +818,27 @@ function App() {
             : { portfolioId: selectedPortfolioId, pdfBase64: brokerFileBase64, sourceIds }),
         },
       );
-      const data = await response.json();
+      const data = await response.json().catch(() => ({})) as BrokerImportCommit & { error?: string };
       if (!response.ok) throw new Error(data.error ?? 'Не удалось импортировать операции');
-      const skipped = typeof data.skippedAlreadyImported === 'number' ? data.skippedAlreadyImported : 0;
-      setBrokerImportMessage(`Добавлено операций: ${data.imported}.${skipped ? ` Пропущено уже импортированных: ${skipped}.` : ''} Комиссии и НКД уже учтены.`);
-      setBrokerPreview(null); setSelectedBrokerOperationIds(new Set()); setBrokerFileBase64(''); setBrokerReportFormat(null); setBrokerReportName('');
+      const skipped = data.skippedAlreadyImported ?? 0;
+      const invalid = data.skippedInvalid ?? [];
+      const invalidIds = new Set(invalid.map((operation) => operation.sourceId));
+      setBrokerImportMessage(`Добавлено операций: ${data.imported}.${skipped ? ` Пропущено уже импортированных: ${skipped}.` : ''}${invalid.length ? ` Пропущено с ошибкой: ${invalid.length}. ${invalid.map((operation) => `${operation.ticker ?? operation.description}: ${operation.reason}`).join(' ')}` : ''} Комиссии и НКД уже учтены.`);
+      if (invalid.length) {
+        const importedIds = new Set(data.selectedSourceIds);
+        setBrokerPreview((current) => current ? { ...current, operations: current.operations.map((operation) => importedIds.has(operation.sourceId) ? { ...operation, alreadyImported: true } : operation) } : null);
+        setSelectedBrokerOperationIds(invalidIds);
+        setToast({ tone: 'success', title: `Добавлено операций: ${data.imported}`, detail: `Пропущено: ${invalid.length}. Их можно исправить или снять с выбора.` });
+      } else {
+        setBrokerPreview(null); setSelectedBrokerOperationIds(new Set()); setBrokerFileBase64(''); setBrokerReportFormat(null); setBrokerReportName('');
+        setToast({ tone: 'success', title: `Добавлено операций: ${data.imported}`, detail: skipped ? `Пропущено уже импортированных: ${skipped}.` : 'Комиссии и НКД уже учтены.' });
+      }
       await Promise.all([loadActivity(selectedPortfolioId), loadInstruments(query), loadTransactionInstruments(), loadMarketData()]);
-    } catch (error) { setBrokerImportMessage(error instanceof Error ? error.message : 'Не удалось импортировать операции'); }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Не удалось импортировать операции';
+      setBrokerImportMessage(detail);
+      setToast({ tone: 'error', title: 'Импорт не выполнен', detail });
+    }
     finally { setIsBrokerImporting(false); }
   }
 
@@ -810,6 +857,28 @@ function App() {
     return transaction.type === 'SELL'
       ? gross + transaction.accruedInterestKopecks - transaction.commissionKopecks
       : gross + transaction.accruedInterestKopecks + transaction.commissionKopecks;
+  }
+
+  function transactionFlow(transaction: Transaction) {
+    const incoming = new Set(['DEPOSIT', 'SELL', 'DIVIDEND', 'COUPON']);
+    const labels: Record<string, string> = {
+      DEPOSIT: 'Пополнение',
+      WITHDRAWAL: 'Вывод средств',
+      BUY: 'Покупка',
+      SELL: 'Продажа',
+      DIVIDEND: 'Дивиденды',
+      COUPON: 'Купон',
+      FEE: 'Комиссия брокера',
+      TAX: 'Налог',
+    };
+    const isIncoming = incoming.has(transaction.type);
+    return {
+      amount: transactionAmount(transaction),
+      label: labels[transaction.type] ?? transaction.type,
+      isIncoming,
+      directionLabel: isIncoming ? 'Приход' : 'Расход',
+      hint: isIncoming ? 'Поступило в портфель' : 'Списано из портфеля',
+    };
   }
 
   function toggleBrokerOperation(sourceId: string) {
@@ -918,6 +987,7 @@ function App() {
   if (!authSession?.authenticated) return <AuthScreen session={authSession} apiUrl={apiUrl} onAuthenticated={setAuthSession} theme={theme} onToggleTheme={() => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')} />;
 
   return <div className="app-shell">
+    {toast && <div className={`app-toast ${toast.tone}`} role={toast.tone === 'error' ? 'alert' : 'status'} aria-live="polite"><div><strong>{toast.title}</strong><span>{toast.detail}</span></div><button type="button" onClick={() => setToast(null)} aria-label="Закрыть уведомление">×</button></div>}
     <nav className="top-navigation" aria-label="Основная навигация"><a className="top-brand" href="#overview" onClick={() => setActivePage('overview')}><span>●</span> Капитал</a><div className="nav-links">{navigationPages.map((page) => <a key={page} className={activePage === page || (page === 'instruments' && activePage === 'instrument') ? 'active' : ''} href={`#${page}`} onClick={() => setActivePage(page)}>{pageTitles[page]}{page === 'portfolios' && <small>{portfolios.length}</small>}</a>)}</div><div className="navigation-actions"><button className="theme-toggle" type="button" onClick={() => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'} title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><button className="profile" type="button" title={`Выйти: ${authSession.user?.email ?? ''}`} onClick={() => void logout()}>{authSession.user?.email.slice(0, 1).toUpperCase() ?? 'А'}</button></div></nav>
     <main className="app" id="top">
       <div className="topbar"><span className="crumb">Инвестиции <b>/</b> {activePage === 'instrument' && selectedInstrumentTicker ? `Инструменты / ${selectedInstrumentTicker}` : pageTitles[activePage]}</span>{isBackendLoading && <span className="backend-loading" role="status" aria-live="polite"><i />Загружаем данные…</span>}</div>
@@ -937,7 +1007,7 @@ function App() {
         <div className="metric-grid"><div><span>Стоимость</span><strong>{analytics ? money(analytics.totalValueKopecks) : '—'}</strong></div><div><span>Вложено</span><strong>{analytics ? money(analytics.netContributionsKopecks) : '—'}</strong></div><div><span>Результат</span><strong className={analytics && analytics.totalPnlKopecks < 0 ? 'negative' : 'positive'}>{analytics ? money(analytics.totalPnlKopecks) : '—'}</strong></div><div><span>Свободные деньги</span><strong>{analytics ? money(analytics.cashKopecks) : '—'}</strong></div></div>
         <section className="broker-import" aria-labelledby="broker-import-title">
           <div className="broker-import-heading"><div><p className="section-label">ИМПОРТ ИЗ БРОКЕРА</p><h3 id="broker-import-title">Загрузить отчёт {selectedBroker === 'sber' ? 'СберИнвестиций' : 'Т‑Банка'}</h3><p>{selectedBroker === 'sber' ? 'Поддерживается Excel (.xlsx) в формате экспорта «Операции». Комиссия берётся из исполненных заявок.' : 'Поддерживаются PDF и Excel (.xlsx).'} Отметьте нужные операции и выберите портфель — данные появятся в нём только после подтверждения.</p></div><span className="broker-badge">{brokerPreview?.format ?? (selectedBroker === 'sber' ? 'XLSX' : 'PDF / XLSX')}</span></div>
-          <div className="broker-upload"><label className="broker-picker" htmlFor="broker-name"><span>Брокер</span><select id="broker-name" value={selectedBroker} onChange={(event) => { setSelectedBroker(event.target.value as BrokerName); setBrokerPreview(null); setSelectedBrokerOperationIds(new Set()); setBrokerFileBase64(''); setBrokerReportFormat(null); setBrokerReportName(''); setBrokerImportMessage('Выберите файл для нового предпросмотра.'); }}><option value="tbank">Т‑Банк</option><option value="sber">СберИнвестиции</option></select></label><label className="file-picker" htmlFor="broker-report">Выбрать файл<input key={selectedBroker} id="broker-report" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" onChange={chooseBrokerReport} /></label><span>{brokerReportName || 'Файл не выбран'}</span><button type="button" onClick={() => void previewBrokerReport()} disabled={!brokerFileBase64 || isBrokerImporting}>{isBrokerImporting ? 'Обработка…' : 'Показать операции'}</button></div>
+          <div className="broker-upload"><label className="broker-picker" htmlFor="broker-name"><span>Брокер</span><select id="broker-name" value={selectedBroker} onChange={(event) => { setSelectedBroker(event.target.value as BrokerName); setBrokerPreview(null); setSelectedBrokerOperationIds(new Set()); setBrokerFileBase64(''); setBrokerReportFormat(null); setBrokerReportName(''); setBrokerImportMessage('Выберите файл для нового предпросмотра.'); }}><option value="tbank">Т‑Банк</option><option value="sber">СберИнвестиции</option></select></label><label className="file-picker" htmlFor="broker-report"><span>Отчёт</span><b>Выбрать файл</b><input key={selectedBroker} id="broker-report" type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" onChange={chooseBrokerReport} /></label><span className="broker-file-name" title={brokerReportName || undefined}><small>Выбранный файл</small><b>{brokerReportName || 'Файл не выбран'}</b></span><div className="broker-preview-action"><span>Проверка</span><button type="button" onClick={() => void previewBrokerReport()} disabled={!brokerFileBase64 || isBrokerImporting}>{isBrokerImporting ? 'Обработка…' : 'Показать операции'}</button></div></div>
           {brokerImportMessage && <p className="broker-message" role="status">{brokerImportMessage}</p>}
           {brokerPreview && <div className="broker-preview">
             <div className="broker-summary"><span><b>{brokerPreview.summary.trades}</b> сделок</span><span><b>{brokerPreview.summary.deposits}</b> пополнения</span>{brokerPreview.summary.withdrawals > 0 && <span><b>{brokerPreview.summary.withdrawals}</b> вывода</span>}{alreadyImportedBrokerOperations.length > 0 && <span><b>{alreadyImportedBrokerOperations.length}</b> уже импортировано</span>}<span>в отчёте комиссий {money(brokerPreview.summary.commissionsKopecks)}</span></div>
@@ -948,9 +1018,9 @@ function App() {
             <div className="broker-confirm"><span>{selectedPortfolioId ? `${selectedBrokerOperations.length} отмеч. операций будут добавлены в «${portfolios.find((portfolio) => portfolio.id === selectedPortfolioId)?.name ?? 'выбранный портфель'}».` : 'Выберите портфель для добавления отмеченных операций.'}</span><button type="button" onClick={() => void commitBrokerImport()} disabled={!selectedPortfolioId || !selectedBrokerOperations.length || isBrokerImporting}>{isBrokerImporting ? 'Импорт…' : `Добавить ${selectedBrokerOperations.length} операций`}</button></div>
           </div>}
         </section>
-        <div className="transaction-layout"><form className="transaction-form" onSubmit={addTransaction}><h3>Добавить операцию</h3><label className="field-label" htmlFor="transaction-portfolio">Портфель</label><select id="transaction-portfolio" value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} required><option value="">Выберите портфель</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select><label className="field-label" htmlFor="transaction-type">Тип операции</label><select id="transaction-type" value={transactionType} onChange={(event) => setTransactionType(event.target.value)}><option value="DEPOSIT">Пополнение счёта</option><option value="WITHDRAWAL">Вывод средств</option><option value="BUY">Покупка бумаги</option><option value="SELL">Продажа бумаги</option><option value="DIVIDEND">Дивиденды</option><option value="COUPON">Купон</option><option value="FEE">Комиссия брокера</option><option value="TAX">Налог</option></select>{instrumentTypes.has(transactionType) && <>{transactionInstruments.length ? <><label className="field-label" htmlFor="transaction-instrument">Инструмент</label><select id="transaction-instrument" value={transactionInstrumentId} onChange={(event) => setTransactionInstrumentId(event.target.value)} required><option value="">Выберите инструмент</option>{transactionInstruments.map((instrument) => <option key={instrument.id} value={instrument.id}>{instrument.ticker} — {instrument.name}</option>)}</select></> : <p className="instrument-help">Сначала <a href="#catalog">добавьте инструмент из MOEX</a> в каталог.</p>}</>}<label className="field-label" htmlFor="operation-date">Дата операции</label><input id="operation-date" type="date" value={operationDate} onChange={(event) => setOperationDate(event.target.value)} required />{tradeTypes.has(transactionType) ? <><label className="field-label" htmlFor="transaction-quantity">Количество, шт.</label><input id="transaction-quantity" inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="Например, 10" required /><label className="field-label" htmlFor="transaction-price">Цена за штуку, ₽</label><input id="transaction-price" inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="Например, 280,50" required /><label className="field-label" htmlFor="transaction-commission">Комиссия брокера, ₽</label><input id="transaction-commission" inputMode="decimal" value={commission} onChange={(event) => setCommission(event.target.value)} placeholder="0" required /></> : <><label className="field-label" htmlFor="transaction-amount">Сумма, ₽</label><input id="transaction-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Например, 100 000" required /><p className="form-hint">Комиссию и налог добавляйте отдельными операциями, чтобы учёт был прозрачным.</p></>}<button disabled={!selectedPortfolioId || (instrumentTypes.has(transactionType) && !transactionInstruments.length)}>Добавить операцию</button>{!selectedPortfolioId && <p className="form-hint">Выберите портфель, чтобы сохранить операцию.</p>}{transactionMessage && <p role="status">{transactionMessage}</p>}</form>
+        <div className="transaction-layout"><form className="transaction-form" onSubmit={addTransaction}><h3>Добавить операцию</h3><label className="field-label" htmlFor="transaction-portfolio">Портфель</label><select id="transaction-portfolio" value={selectedPortfolioId ?? ''} onChange={(event) => setSelectedPortfolioId(event.target.value ? Number(event.target.value) : null)} required><option value="">Выберите портфель</option>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select><label className="field-label" htmlFor="transaction-type">Тип операции</label><select id="transaction-type" value={transactionType} onChange={(event) => setTransactionType(event.target.value)}><option value="DEPOSIT">Пополнение счёта</option><option value="WITHDRAWAL">Вывод средств</option><option value="BUY">Покупка бумаги</option><option value="SELL">Продажа бумаги</option><option value="DIVIDEND">Дивиденды</option><option value="COUPON">Купон</option><option value="FEE">Комиссия брокера</option><option value="TAX">Налог</option></select>{instrumentTypes.has(transactionType) && <>{transactionInstruments.length ? <><label className="field-label" htmlFor="transaction-instrument">Инструмент</label><select id="transaction-instrument" value={transactionInstrumentId} onChange={(event) => setTransactionInstrumentId(event.target.value)} required><option value="">Выберите инструмент</option>{transactionInstruments.map((instrument) => <option key={instrument.id} value={instrument.id}>{instrument.ticker} — {instrument.name}</option>)}</select></> : <p className="instrument-help">Сначала <a href="#catalog">добавьте инструмент из MOEX</a> в каталог.</p>}</>}<label className="field-label" htmlFor="operation-date">Дата операции</label><input id="operation-date" type="date" value={operationDate} onChange={(event) => setOperationDate(event.target.value)} required />{tradeTypes.has(transactionType) ? <><label className="field-label" htmlFor="transaction-quantity">Количество, шт.</label><input id="transaction-quantity" inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value)} placeholder="Например, 10" required /><label className="field-label" htmlFor="transaction-price">Цена за штуку, ₽</label><input id="transaction-price" inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="Например, 280,50" required /><label className="field-label" htmlFor="transaction-commission">Комиссия брокера, ₽</label><input id="transaction-commission" inputMode="decimal" value={commission} onChange={(event) => setCommission(event.target.value)} placeholder="0" required /></> : <><label className="field-label" htmlFor="transaction-amount">Сумма, ₽</label><input id="transaction-amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Например, 100 000" required /><p className="form-hint">Комиссию и налог добавляйте отдельными операциями, чтобы учёт был прозрачным.</p></>}<button disabled={isAddingTransaction || !selectedPortfolioId || (instrumentTypes.has(transactionType) && (!transactionInstruments.length || !transactionInstrumentId))}>{isAddingTransaction ? 'Добавляем…' : 'Добавить операцию'}</button>{!selectedPortfolioId && <p className="form-hint">Выберите портфель, чтобы сохранить операцию.</p>}{transactionMessage && <p className="transaction-message" role="status">{transactionMessage}</p>}</form>
           <div className="positions"><h3>Текущие позиции</h3>{analytics?.positions.length ? analytics.positions.map((position) => <div className="position-row" key={position.instrumentId}><div><strong>{position.ticker}</strong><span>{position.quantity} шт. · средняя {money(position.averageCostKopecks)}</span></div><div><strong>{position.marketValueKopecks === null ? 'Нет цены' : money(position.marketValueKopecks)}</strong><span className={position.unrealizedPnlKopecks !== null && position.unrealizedPnlKopecks < 0 ? 'negative' : 'positive'}>{position.unrealizedPnlKopecks === null ? '—' : `${money(position.unrealizedPnlKopecks)} · ${position.allocationPercent ?? 0}%`}</span></div></div>) : <p className="portfolio-empty">Добавьте покупку — здесь появятся ваши позиции.</p>}</div></div>
-        <div className="history"><h3>История операций</h3>{transactions.length ? <><div className="batch-selection-bar"><label className="batch-select-all"><input type="checkbox" checked={allVisibleTransactionsSelected} onChange={toggleAllTransactions} disabled={isDeletingTransactions} /><span>{allVisibleTransactionsSelected ? 'Снять выбор' : 'Выбрать все'}</span></label><span className="batch-selection-count">Выбрано: {selectedVisibleTransactions.length} из {transactions.length}</span><button className="batch-delete-button" type="button" onClick={() => void removeSelectedTransactions()} disabled={!selectedVisibleTransactions.length || isDeletingTransactions}>{isDeletingTransactions ? 'Удаляем…' : `Удалить ${selectedVisibleTransactions.length || ''}`}</button></div><div className="history-table-wrap"><table><thead><tr><th><input type="checkbox" checked={allVisibleTransactionsSelected} onChange={toggleAllTransactions} disabled={isDeletingTransactions} aria-label="Выбрать все операции" /></th><th>Дата</th><th>Операция</th><th>Инструмент</th><th>Сумма</th></tr></thead><tbody>{transactions.map((transaction) => <tr key={transaction.id} className={selectedTransactionIds.has(transaction.id) ? 'selected' : ''}><td><input type="checkbox" checked={selectedTransactionIds.has(transaction.id)} onChange={() => toggleTransactionSelection(transaction.id)} disabled={isDeletingTransactions} aria-label={`Выбрать операцию ${transaction.type} от ${new Date(transaction.operationDate).toLocaleDateString('ru-RU')}`} /></td><td>{new Date(transaction.operationDate).toLocaleDateString('ru-RU')}</td><td>{transaction.type}</td><td>{transaction.ticker ?? 'Денежная операция'}</td><td>{transactionAmount(transaction) === null ? '—' : money(transactionAmount(transaction) ?? 0)}</td></tr>)}</tbody></table></div></> : <p className="portfolio-empty">История операций пока пуста.</p>}</div>
+        <div className="history"><h3>История операций</h3>{transactions.length ? <><div className="batch-selection-bar"><label className="batch-select-all"><input type="checkbox" checked={allVisibleTransactionsSelected} onChange={toggleAllTransactions} disabled={isDeletingTransactions} /><span>{allVisibleTransactionsSelected ? 'Снять выбор' : 'Выбрать все'}</span></label><span className="batch-selection-count">Выбрано: {selectedVisibleTransactions.length} из {transactions.length}</span><button className="batch-delete-button" type="button" onClick={() => void removeSelectedTransactions()} disabled={!selectedVisibleTransactions.length || isDeletingTransactions}>{isDeletingTransactions ? 'Удаляем…' : `Удалить ${selectedVisibleTransactions.length || ''}`}</button></div><div className="history-table-wrap"><table><thead><tr><th><input type="checkbox" checked={allVisibleTransactionsSelected} onChange={toggleAllTransactions} disabled={isDeletingTransactions} aria-label="Выбрать все операции" /></th><th>Дата</th><th>Движение</th><th>Инструмент</th><th>Сумма</th></tr></thead><tbody>{transactions.map((transaction) => { const flow = transactionFlow(transaction); return <tr key={transaction.id} className={`${selectedTransactionIds.has(transaction.id) ? 'selected ' : ''}flow-${flow.isIncoming ? 'income' : 'expense'}`}><td><input type="checkbox" checked={selectedTransactionIds.has(transaction.id)} onChange={() => toggleTransactionSelection(transaction.id)} disabled={isDeletingTransactions} aria-label={`Выбрать операцию ${flow.label} от ${new Date(transaction.operationDate).toLocaleDateString('ru-RU')}`} /></td><td>{new Date(transaction.operationDate).toLocaleDateString('ru-RU')}</td><td><div className="operation-flow"><span className={`flow-badge ${flow.isIncoming ? 'income' : 'expense'}`}>{flow.isIncoming ? '↑' : '↓'} {flow.directionLabel}</span><strong>{flow.label}</strong></div></td><td><strong>{transaction.ticker ?? 'Денежная операция'}</strong>{transaction.name && <span>{transaction.name}</span>}</td><td><strong className={`cashflow-value ${flow.isIncoming ? 'income' : 'expense'}`}>{flow.amount === null ? '—' : `${flow.isIncoming ? '+' : '−'}${money(flow.amount)}`}</strong><span>{flow.hint}</span></td></tr>; })}</tbody></table></div></> : <p className="portfolio-empty">История операций пока пуста.</p>}</div>
       </section>}
       {activePage === 'instruments' && <><section className="add-panel"><div><h2>Добавить по тикеру</h2><p>Например: SBER, SU26238RMFS4 или SBMX</p></div><form onSubmit={addInstrument}><label htmlFor="ticker">Тикер</label><input id="ticker" value={ticker} onChange={(event) => setTicker(event.target.value)} placeholder="Введите тикер" autoComplete="off" /><button disabled={isLoading}>{isLoading ? 'Загрузка…' : 'Добавить'}</button></form></section>
       <section className="catalog" id="catalog"><div className="catalog-heading"><div><p className="section-label">ПОИСК И ИМПОРТ</p><h2>Найдите инструмент</h2></div><div className="search-wrap"><span>⌕</span><input className="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Тикер, название или номер ОФЗ" aria-label="Поиск" /></div></div>

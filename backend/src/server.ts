@@ -33,6 +33,7 @@ import {
 } from './instruments/instrument-details.service';
 import { applyMigrations } from './db';
 import { getBondAnalytics, getPortfolioAnalytics } from './analytics/analytics.service';
+import { invalidateAutomaticCouponSync, syncAutomaticCoupons } from './analytics/coupon-sync.service';
 import { getPortfolioComparison } from './analytics/portfolio-comparison.service';
 import { getPortfolioIncomeForecast, invalidatePortfolioIncomeForecast } from './analytics/income-forecast.service';
 import { getPortfolioPerformance, invalidatePortfolioPerformance } from './analytics/portfolio-performance.service';
@@ -286,7 +287,9 @@ app.get('/api/portfolios/aggregate', async (_req, res, next) => {
 
 app.get('/api/analytics', async (_req, res, next) => {
     try {
-        res.json(await getPortfolioAnalytics(sessionUserId(res)));
+        const userId = sessionUserId(res);
+        await syncAutomaticCoupons(userId);
+        res.json(await getPortfolioAnalytics(userId));
     } catch (error) {
         next(error);
     }
@@ -346,7 +349,9 @@ app.get('/api/portfolios/:id/analytics', async (req, res, next) => {
         return;
     }
     try {
-        res.json(await getPortfolioAnalytics(sessionUserId(res), id));
+        const userId = sessionUserId(res);
+        await syncAutomaticCoupons(userId, id);
+        res.json(await getPortfolioAnalytics(userId, id));
     } catch (error) {
         next(error);
     }
@@ -393,6 +398,7 @@ app.delete('/api/portfolios/:id', async (req, res, next) => {
         await deletePortfolio(userId, id);
         invalidatePortfolioPerformance(userId, id);
         invalidatePortfolioIncomeForecast(userId, id);
+        invalidateAutomaticCouponSync(userId, id);
         res.status(204).end();
     } catch (error) {
         next(error);
@@ -432,6 +438,7 @@ app.post('/api/imports/tbank/commit', async (req, res, next) => {
         );
         invalidatePortfolioPerformance(userId, portfolioId);
         invalidatePortfolioIncomeForecast(userId, portfolioId);
+        invalidateAutomaticCouponSync(userId, portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -458,6 +465,7 @@ app.post('/api/imports/tbank/xlsx/commit', async (req, res, next) => {
         );
         invalidatePortfolioPerformance(userId, portfolioId);
         invalidatePortfolioIncomeForecast(userId, portfolioId);
+        invalidateAutomaticCouponSync(userId, portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -484,6 +492,7 @@ app.post('/api/imports/sber/xlsx/commit', async (req, res, next) => {
         );
         invalidatePortfolioPerformance(userId, portfolioId);
         invalidatePortfolioIncomeForecast(userId, portfolioId);
+        invalidateAutomaticCouponSync(userId, portfolioId);
         res.status(201).json(result);
     } catch (error) {
         next(error);
@@ -496,6 +505,7 @@ app.post('/api/transactions', async (req, res, next) => {
         const transaction = await createTransaction(userId, parseTransactionInput(req.body));
         invalidatePortfolioPerformance(userId, transaction.portfolioId);
         invalidatePortfolioIncomeForecast(userId, transaction.portfolioId);
+        invalidateAutomaticCouponSync(userId, transaction.portfolioId);
         res.status(201).json(transaction);
     } catch (error) {
         next(error);
@@ -508,6 +518,7 @@ app.delete('/api/transactions', async (req, res, next) => {
         const result = await deleteTransactions(userId, req.body?.ids);
         invalidatePortfolioPerformance(userId);
         invalidatePortfolioIncomeForecast(userId);
+        invalidateAutomaticCouponSync(userId);
         res.json(result);
     } catch (error) {
         next(error);
@@ -525,6 +536,7 @@ app.delete('/api/transactions/:id', async (req, res, next) => {
         await deleteTransaction(userId, id);
         invalidatePortfolioPerformance(userId);
         invalidatePortfolioIncomeForecast(userId);
+        invalidateAutomaticCouponSync(userId);
         res.status(204).end();
     } catch (error) {
         next(error);

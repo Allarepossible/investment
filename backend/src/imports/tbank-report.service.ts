@@ -1,5 +1,5 @@
 import pdf from 'pdf-parse';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { inflateRawSync } from 'node:zlib';
 import { calculatePortfolioTotals, type PortfolioTransaction } from '../analytics/portfolio.analytics';
 import { db } from '../db';
@@ -44,6 +44,13 @@ export type BrokerReportPreview = {
         withdrawals: number;
         commissionsKopecks: number;
     };
+};
+
+type SkippedImportOperation = {
+    sourceId: string;
+    ticker: string | null;
+    description: string;
+    reason: string;
 };
 
 export class BrokerReportImportError extends Error {}
@@ -273,6 +280,16 @@ function moneyToKopecks(value: string) {
     return kopecks;
 }
 
+function isRubCurrency(value: string) {
+    const normalized = value.trim().toUpperCase().replace(/\./g, '');
+    return normalized === 'RUB' || normalized === 'RUR' || normalized === 'РУБ';
+}
+
+function unsupportedCurrencyMessage(value: string) {
+    const currency = value.trim().toUpperCase() || 'не указана';
+    return `валюта расчёта ${currency}; сейчас поддерживается рублёвый учёт`;
+}
+
 function isCompleteMoney(value: string) {
     return /^\d[\d,]*\.\d{2}$/.test(value);
 }
@@ -452,8 +469,8 @@ function parseXlsxExecutedTrades(rows: SpreadsheetRow[], warnings: string[]): Br
             if (!datePattern.test(date)) throw new Error('дата сделки не найдена');
             const ticker = normalizeSpreadsheetTicker(rowText(row, 'T'));
             if (!tickerPattern.test(ticker)) throw new Error('тикер не найден');
-            const settlementCurrency = rowText(row, 'AM').toUpperCase();
-            if (settlementCurrency !== 'RUB') throw new Error('поддерживаются только расчёты в рублях');
+            const settlementCurrency = rowText(row, 'AM');
+            if (!isRubCurrency(settlementCurrency)) throw new Error(unsupportedCurrencyMessage(settlementCurrency));
 
             const quantity = parseSpreadsheetNumber(rowText(row, 'AA'), 'количество');
             if (!Number.isSafeInteger(quantity) || quantity < 1) throw new Error('количество должно быть целым и больше нуля');
@@ -588,7 +605,8 @@ function parseSberTrades(rows: SpreadsheetRow[], warnings: string[]): BrokerRepo
             if (direction !== 'Покупка' && direction !== 'Продажа') throw new Error('направление сделки не найдено');
             const ticker = normalizeSpreadsheetTicker(sberCell(row, headers, 'Код финансового инструмента'));
             if (!tickerPattern.test(ticker)) throw new Error('тикер не найден');
-            if (sberCell(row, headers, 'Валюта').toUpperCase() !== 'RUB') throw new Error('поддерживаются только расчёты в рублях');
+            const currency = sberCell(row, headers, 'Валюта');
+            if (!isRubCurrency(currency)) throw new Error(unsupportedCurrencyMessage(currency));
 
             const quantity = parseSpreadsheetNumber(sberCell(row, headers, 'Количество'), 'количество');
             if (!Number.isSafeInteger(quantity) || quantity < 1) throw new Error('количество должно быть целым и больше нуля');
@@ -651,7 +669,8 @@ function parseSberCashOperations(rows: SpreadsheetRow[], warnings: string[]): Br
         if (!type) continue;
 
         try {
-            if (sberCell(row, headers, 'Валюта операции').toUpperCase() !== 'RUB') throw new Error('поддерживаются только расчёты в рублях');
+            const currency = sberCell(row, headers, 'Валюта операции');
+            if (!isRubCurrency(currency)) throw new Error(unsupportedCurrencyMessage(currency));
             const operationDate = toSberIsoDate(sberCell(row, headers, 'Дата исполнения поручения'), 'дата операции');
             const amountKopecks = spreadsheetMoneyToKopecks(sberCell(row, headers, 'Сумма'), 'сумма операции');
             if (amountKopecks < 1) throw new Error('сумма операции должна быть больше нуля');
@@ -813,9 +832,22 @@ async function getImportedTransactionInputs(
     broker: BrokerReportName,
 ) {
     const tickers = [...new Set(operations.flatMap((operation) => operation.ticker ? [operation.ticker] : []))];
-    const importedInstruments = await Promise.allSettled(tickers.map((ticker) => addInstrument(ticker)));
+    const knownInstruments = tickers.length
+        ? await db.select().from(instruments).where(or(
+            inArray(instruments.ticker, tickers),
+            inArray(instruments.isin, tickers),
+        ))
+        : [];
+    const resolvedTickers = new Map<string, string>();
+    for (const instrument of knownInstruments) {
+        resolvedTickers.set(instrument.ticker, instrument.ticker);
+        if (instrument.isin) resolvedTickers.set(instrument.isin.toUpperCase(), instrument.ticker);
+    }
+
+    const missingTickers = tickers.filter((ticker) => !resolvedTickers.has(ticker));
+    const importedInstruments = await Promise.allSettled(missingTickers.map((ticker) => addInstrument(ticker)));
     const unavailableTickers = importedInstruments.flatMap((result, index) =>
-        result.status === 'rejected' ? [tickers[index]] : [],
+        result.status === 'rejected' ? [missingTickers[index]] : [],
     );
     if (unavailableTickers.length) {
         throw new BrokerReportImportError(
@@ -824,15 +856,22 @@ async function getImportedTransactionInputs(
         );
     }
 
-    const savedInstruments = tickers.length
-        ? await db.select().from(instruments).where(inArray(instruments.ticker, tickers))
+    for (const [index, result] of importedInstruments.entries()) {
+        if (result.status === 'fulfilled') {
+            resolvedTickers.set(missingTickers[index], result.value.ticker);
+        }
+    }
+
+    const savedTickers = [...new Set(resolvedTickers.values())];
+    const savedInstruments = savedTickers.length
+        ? await db.select().from(instruments).where(inArray(instruments.ticker, savedTickers))
         : [];
     const instrumentIds = new Map(savedInstruments.map((instrument) => [instrument.ticker, instrument.id]));
 
     return operations.map((operation) => parseTransactionInput({
         portfolioId,
         type: operation.type,
-        instrumentId: operation.ticker ? instrumentIds.get(operation.ticker) : null,
+        instrumentId: operation.ticker ? instrumentIds.get(resolvedTickers.get(operation.ticker) ?? operation.ticker) : null,
         quantity: operation.quantity,
         priceKopecks: operation.priceKopecks,
         amountKopecks: operation.amountKopecks,
@@ -929,22 +968,63 @@ async function importBrokerPreview(
     const allInstruments = await db.select({ id: instruments.id, ticker: instruments.ticker, name: instruments.name }).from(instruments);
     const instrumentById = new Map(allInstruments.map((instrument) => [instrument.id, instrument]));
     const existingTransactions = await listTransactions(userId, portfolioId);
-    calculatePortfolioTotals([
-        ...existingTransactions.map((transaction) => ({ ...transaction, accruedInterestKopecks: transaction.accruedInterestKopecks })),
-        ...inputs.map((input, index) => toPortfolioTransaction(input, -index - 1, instrumentById)),
-    ]);
+    const simulation: PortfolioTransaction[] = existingTransactions.map((transaction) => ({
+        id: transaction.id,
+        portfolioId: transaction.portfolioId,
+        instrumentId: transaction.instrumentId,
+        ticker: transaction.ticker,
+        name: transaction.name,
+        type: transaction.type,
+        quantity: transaction.quantity,
+        priceKopecks: transaction.priceKopecks,
+        amountKopecks: transaction.amountKopecks,
+        accruedInterestKopecks: transaction.accruedInterestKopecks,
+        commissionKopecks: transaction.commissionKopecks,
+        operationDate: transaction.operationDate,
+    }));
+    const acceptedInputs: TransactionInput[] = [];
+    const acceptedOperations: BrokerReportOperation[] = [];
+    const skippedInvalid: SkippedImportOperation[] = [];
+    const simulationIdStart = Math.max(1_000_000_000, ...existingTransactions.map((transaction) => transaction.id + 1));
+
+    for (const [index, input] of inputs.entries()) {
+        const operation = newOperations[index];
+        const candidate = toPortfolioTransaction(input, simulationIdStart + index, instrumentById);
+        try {
+            calculatePortfolioTotals([...simulation, candidate]);
+            simulation.push(candidate);
+            acceptedInputs.push(input);
+            acceptedOperations.push(operation);
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : '';
+            const reason = detail.includes('sells more than the available position')
+                ? 'Недостаточно бумаг в портфеле на дату продажи. Сначала импортируйте более ранние покупки.'
+                : detail.includes('requires an instrument')
+                    ? 'Не найден инструмент для операции.'
+                    : 'Операция нарушает последовательность сделок в портфеле.';
+            skippedInvalid.push({
+                sourceId: operation.sourceId,
+                ticker: operation.ticker,
+                description: operation.description,
+                reason,
+            });
+        }
+    }
 
     const createdAt = new Date();
-    const imported = db.transaction((transactionDb) => transactionDb
-        .insert(transactions)
-        .values(inputs.map((input) => ({ ...input, createdAt })))
-        .returning()
-        .all());
+    const imported = acceptedInputs.length
+        ? db.transaction((transactionDb) => transactionDb
+            .insert(transactions)
+            .values(acceptedInputs.map((input) => ({ ...input, createdAt })))
+            .returning()
+            .all())
+        : [];
 
     return {
         imported: imported.length,
-        selectedSourceIds: newOperations.map((operation) => operation.sourceId),
+        selectedSourceIds: acceptedOperations.map((operation) => operation.sourceId),
         skippedAlreadyImported: selectedOperations.length - newOperations.length,
+        skippedInvalid,
     };
 }
 

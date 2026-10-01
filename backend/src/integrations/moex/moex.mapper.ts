@@ -38,6 +38,7 @@ export interface NormalizedPrice {
 export interface MoexSearchResult {
     ticker: string;
     name: string;
+    isin: string | null;
     type: string;
     board: string | null;
 }
@@ -341,6 +342,7 @@ export function mapMoexSearch(
             const ticker = getBoardValue(securities, row, 'secid');
             const shortName = getBoardValue(securities, row, 'shortname');
             const name = getBoardValue(securities, row, 'name');
+            const isin = getBoardValue(securities, row, 'isin');
             const type = getBoardValue(securities, row, 'type');
             const board = getBoardValue(securities, row, 'primary_boardid');
 
@@ -351,6 +353,7 @@ export function mapMoexSearch(
             return {
                 ticker: String(ticker),
                 name: String(shortName ?? name ?? ticker),
+                isin: isin ? String(isin) : null,
                 type: String(type ?? 'unknown'),
                 board: board ? String(board) : null,
             };
