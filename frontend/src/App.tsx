@@ -23,6 +23,7 @@ type OverviewTab = 'profit' | 'bonds' | 'assets';
 type InstrumentSortKey = 'instrument' | 'type' | 'sector' | 'price' | 'pe' | 'ps' | 'payout' | 'marketCap' | 'parameters';
 type SortDirection = 'asc' | 'desc';
 type HistoryRange = 'all' | '5y' | '1y' | '1m' | '1w' | '1d';
+type Theme = 'light' | 'dark';
 type InstrumentDetails = {
   instrument: Instrument;
   quote: {
@@ -204,6 +205,11 @@ function InstrumentDetailPage({
 }
 
 function App() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const savedTheme = window.localStorage.getItem('capital-theme');
+    if (savedTheme === 'light' || savedTheme === 'dark') return savedTheme;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [transactionInstruments, setTransactionInstruments] = useState<Instrument[]>([]);
@@ -298,6 +304,12 @@ function App() {
       setAuthSession({ authenticated: false, needsRegistration: false, user: null });
     }
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem('capital-theme', theme);
+  }, [theme]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void loadAuthSession(), 0);
@@ -903,10 +915,10 @@ function App() {
     }
   }
 
-  if (!authSession?.authenticated) return <AuthScreen session={authSession} apiUrl={apiUrl} onAuthenticated={setAuthSession} />;
+  if (!authSession?.authenticated) return <AuthScreen session={authSession} apiUrl={apiUrl} onAuthenticated={setAuthSession} theme={theme} onToggleTheme={() => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')} />;
 
   return <div className="app-shell">
-    <nav className="top-navigation" aria-label="Основная навигация"><a className="top-brand" href="#overview" onClick={() => setActivePage('overview')}><span>●</span> Капитал</a><div className="nav-links">{navigationPages.map((page) => <a key={page} className={activePage === page || (page === 'instruments' && activePage === 'instrument') ? 'active' : ''} href={`#${page}`} onClick={() => setActivePage(page)}>{pageTitles[page]}{page === 'portfolios' && <small>{portfolios.length}</small>}</a>)}</div><button className="profile" type="button" title={`Выйти: ${authSession.user?.email ?? ''}`} onClick={() => void logout()}>{authSession.user?.email.slice(0, 1).toUpperCase() ?? 'А'}</button></nav>
+    <nav className="top-navigation" aria-label="Основная навигация"><a className="top-brand" href="#overview" onClick={() => setActivePage('overview')}><span>●</span> Капитал</a><div className="nav-links">{navigationPages.map((page) => <a key={page} className={activePage === page || (page === 'instruments' && activePage === 'instrument') ? 'active' : ''} href={`#${page}`} onClick={() => setActivePage(page)}>{pageTitles[page]}{page === 'portfolios' && <small>{portfolios.length}</small>}</a>)}</div><div className="navigation-actions"><button className="theme-toggle" type="button" onClick={() => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'} title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button><button className="profile" type="button" title={`Выйти: ${authSession.user?.email ?? ''}`} onClick={() => void logout()}>{authSession.user?.email.slice(0, 1).toUpperCase() ?? 'А'}</button></div></nav>
     <main className="app" id="top">
       <div className="topbar"><span className="crumb">Инвестиции <b>/</b> {activePage === 'instrument' && selectedInstrumentTicker ? `Инструменты / ${selectedInstrumentTicker}` : pageTitles[activePage]}</span>{isBackendLoading && <span className="backend-loading" role="status" aria-live="polite"><i />Загружаем данные…</span>}</div>
       {activePage !== 'instrument' && <header className="page-intro"><p className="eyebrow">{activePage === 'overview' ? 'ОБЩИЙ ПРОФИЛЬ' : activePage === 'portfolios' ? 'УПРАВЛЕНИЕ СТРАТЕГИЯМИ' : activePage === 'comparison' ? 'СРАВНЕНИЕ СТРАТЕГИЙ' : activePage === 'operations' ? 'УЧЁТ И АНАЛИТИКА' : activePage === 'analytics' ? 'ДОХОДНОСТЬ И РИСК' : 'КАТАЛОГ РЫНКА'}</p><h1>{activePage === 'overview' ? 'Обзор портфеля' : activePage === 'portfolios' ? 'Мои портфели' : activePage === 'comparison' ? 'Сравнение портфелей' : activePage === 'operations' ? 'Операции' : activePage === 'analytics' ? 'Аналитика портфеля' : 'Инструменты'}</h1><p className="intro">{activePage === 'overview' ? 'Главные показатели по всем вашим инвестициям в одном месте.' : activePage === 'portfolios' ? 'Создавайте отдельные стратегии и управляйте ими независимо.' : activePage === 'comparison' ? 'Смотрите, как разные стратегии отличаются по результату и структуре активов.' : activePage === 'operations' ? 'Добавляйте сделки, пополнения и выплаты — показатели пересчитаются автоматически.' : activePage === 'analytics' ? 'Смотрите историческую доходность, структуру и риски по всем портфелям или по отдельности.' : 'Находите бумаги Московской биржи и собирайте базу для своего портфеля.'}</p></header>}

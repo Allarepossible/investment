@@ -10,10 +10,14 @@ export function AuthScreen({
   session,
   apiUrl,
   onAuthenticated,
+  theme,
+  onToggleTheme,
 }: {
   session: AuthSession | null;
   apiUrl: string;
   onAuthenticated: (session: AuthSession) => void;
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
@@ -57,6 +61,7 @@ export function AuthScreen({
 
   return <main className="auth-screen">
     <section className="auth-card">
+      <button className="theme-toggle auth-theme-toggle" type="button" onClick={onToggleTheme} aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'} title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button>
       <div className="auth-brand"><span>●</span><strong>Капитал</strong></div>
       <p className="section-label">ЛОКАЛЬНЫЙ ДОСТУП</p>
       <h1>{title}</h1>
